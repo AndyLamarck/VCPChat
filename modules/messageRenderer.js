@@ -5,8 +5,6 @@ const ENHANCED_RENDER_DEBOUNCE_DELAY = 400; // ms, for general blocks during str
 const DIARY_RENDER_DEBOUNCE_DELAY = 1000; // ms, potentially longer for diary if complex
 const enhancedRenderDebounceTimers = new WeakMap(); // For debouncing prettify calls
 
-
-
 import { avatarColorCache, getDominantAvatarColor } from './renderer/colorUtils.js';
 import { initializeImageHandler, setContentAndProcessImages, clearImageState, clearAllImageStates } from './renderer/imageHandler.js';
 import { processAnimationsInContent } from './renderer/animation.js';
@@ -42,9 +40,6 @@ function injectEnhancedStyles() {
    }
 }
 
-
-
-
 // --- Core Logic ---
 
 /**
@@ -60,6 +55,83 @@ function escapeHtml(text) {
         .replace(/>/g, '>')
         .replace(/"/g, '"')
         .replace(/'/g, '&#039;');
+}
+
+/**
+ * 应用单个正则规则到文本
+ * @param {string} text - 输入文本
+ * @param {Object} rule - 正则规则对象
+ * @returns {string} 处理后的文本
+ */
+function applyRegexRule(text, rule) {
+    if (!rule || !rule.findPattern || typeof text !== 'string') {
+        return text;
+    }
+
+    try {
+        // 使用 uiHelperFunctions.regexFromString 来解析正则表达式
+        let regex = null;
+        if (window.uiHelperFunctions && window.uiHelperFunctions.regexFromString) {
+            regex = window.uiHelperFunctions.regexFromString(rule.findPattern);
+        } else {
+            // 后备方案：手动解析
+            const regexMatch = rule.findPattern.match(/^\/(.+?)\/([gimuy]*)$/);
+            if (regexMatch) {
+                regex = new RegExp(regexMatch[1], regexMatch[2]);
+            } else {
+                regex = new RegExp(rule.findPattern, 'g');
+            }
+        }
+        
+        if (!regex) {
+            console.error('无法解析正则表达式:', rule.findPattern);
+            return text;
+        }
+        
+        // 应用替换（如果没有替换内容，则默认替换为空字符串）
+        return text.replace(regex, rule.replaceWith || '');
+    } catch (error) {
+        console.error('应用正则规则时出错:', rule.findPattern, error);
+        return text;
+    }
+}
+
+/**
+ * 应用所有匹配的正则规则到文本（前端版本）
+ * @param {string} text - 输入文本
+ * @param {Array} rules - 正则规则数组
+ * @param {string} role - 消息角色 ('user' 或 'assistant')
+ * @param {number} depth - 消息深度（0 = 最新消息）
+ * @returns {string} 处理后的文本
+ */
+function applyFrontendRegexRules(text, rules, role, depth) {
+    if (!rules || !Array.isArray(rules) || typeof text !== 'string') {
+        return text;
+    }
+
+    let processedText = text;
+    
+    rules.forEach(rule => {
+        // 检查是否应该应用此规则
+        
+        // 1. 检查是否应用于前端
+        if (!rule.applyToFrontend) return;
+        
+        // 2. 检查角色
+        const shouldApplyToRole = rule.applyToRoles && rule.applyToRoles.includes(role);
+        if (!shouldApplyToRole) return;
+        
+        // 3. 检查深度（-1 表示无限制）
+        const minDepthOk = rule.minDepth === undefined || rule.minDepth === -1 || depth >= rule.minDepth;
+        const maxDepthOk = rule.maxDepth === undefined || rule.maxDepth === -1 || depth <= rule.maxDepth;
+        
+        if (!minDepthOk || !maxDepthOk) return;
+        
+        // 应用规则
+        processedText = applyRegexRule(processedText, rule);
+    });
+    
+    return processedText;
 }
 
 /**
@@ -335,11 +407,49 @@ function deIndentHtml(text) {
 
 
 /**
+ * 根据对话轮次计算消息的深度。
+ * @param {string} messageId - 目标消息的ID。
+ * @param {Array<Message>} history - 完整的聊天记录数组。
+ * @returns {number} - 计算出的深度（0代表最新一轮）。
+ */
+function calculateDepthByTurns(messageId, history) {
+    const turns = [];
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].role === 'assistant') {
+            const turn = { assistant: history[i], user: null };
+            if (i > 0 && history[i - 1].role === 'user') {
+                turn.user = history[i - 1];
+                i--; // 跳过用户消息
+            }
+            turns.unshift(turn);
+        } else if (history[i].role === 'user') {
+            turns.unshift({ assistant: null, user: history[i] });
+        }
+    }
+    
+    const turnIndex = turns.findIndex(t => (t.assistant && t.assistant.id === messageId) || (t.user && t.user.id === messageId));
+    
+    // 如果找不到，默认为最新消息（深度0），这对于新消息渲染是安全的回退
+    return turnIndex !== -1 ? (turns.length - 1 - turnIndex) : 0;
+}
+
+
+/**
  * A helper function to preprocess the full message content string before parsing.
  * @param {string} text The raw text content.
  * @returns {string} The processed text.
  */
-function preprocessFullContent(text, settings = {}) {
+function preprocessFullContent(text, settings = {}, messageRole = 'assistant', depth = 0) {
+    // --- 应用正则规则（前端）---
+    const currentSelectedItem = mainRendererReferences.currentSelectedItemRef.get();
+    const agentConfig = currentSelectedItem?.config || currentSelectedItem;
+
+    if (agentConfig?.stripRegexes && Array.isArray(agentConfig.stripRegexes)) {
+        // 应用前端正则规则，包含深度控制
+        text = applyFrontendRegexRules(text, agentConfig.stripRegexes, messageRole, depth);
+    }
+    // --- 正则规则应用结束 ---
+
     const codeBlockMap = new Map();
     let placeholderId = 0;
 
@@ -469,7 +579,8 @@ function initializeMessageRenderer(refs) {
        chatMessagesDiv: mainRendererReferences.chatMessagesDiv,
    });
 
-   // Initialize the emoticon fixer
+   // Start the emoticon fixer initialization, but don't wait for it here.
+   // The await will happen inside renderMessage to ensure it's ready before rendering.
    emoticonUrlFixer.initialize(mainRendererReferences.electronAPI);
 
    // Add event listener for collapsible tool results
@@ -509,6 +620,7 @@ function initializeMessageRenderer(refs) {
        startStreamingMessage: startStreamingMessage,
        setContentAndProcessImages: setContentAndProcessImages,
        processRenderedContent: contentProcessor.processRenderedContent,
+       runTextHighlights: contentProcessor.runTextHighlights,
        preprocessFullContent: preprocessFullContent,
        renderAttachments: renderAttachments,
        interruptHandler: mainRendererReferences.interruptHandler, // Pass the interrupt handler
@@ -532,6 +644,7 @@ function initializeMessageRenderer(refs) {
        showContextMenu: contextMenu.showContextMenu,
        setContentAndProcessImages: setContentAndProcessImages,
        processRenderedContent: contentProcessor.processRenderedContent,
+       runTextHighlights: contentProcessor.runTextHighlights,
        preprocessFullContent: preprocessFullContent,
        // Pass individual processors needed by streamManager
        removeSpeakerTags: contentProcessor.removeSpeakerTags,
@@ -541,7 +654,6 @@ function initializeMessageRenderer(refs) {
        ensureSeparatorBetweenImgAndCode: contentProcessor.ensureSeparatorBetweenImgAndCode,
 
        // Pass the main processor function
-       processRenderedContent: contentProcessor.processRenderedContent,
        processAnimationsInContent: processAnimationsInContent, // Pass the animation processor
 
        // Debouncing and Timers
@@ -607,7 +719,7 @@ async function renderAttachments(message, contentDiv) {
                 attachmentElement.onclick = (e) => {
                     e.stopPropagation();
                     const currentTheme = document.body.classList.contains('light-theme') ? 'light' : 'dark';
-                    electronAPI.openImageInNewWindow(att.src, att.name, currentTheme);
+                    electronAPI.openImageViewer({ src: att.src, title: att.name, theme: currentTheme });
                 };
                  attachmentElement.addEventListener('contextmenu', (e) => { // Use attachmentElement here
                     e.preventDefault(); e.stopPropagation();
@@ -642,7 +754,7 @@ async function renderAttachments(message, contentDiv) {
     }
 }
 
-async function renderMessage(message, isInitialLoad = false) {
+async function renderMessage(message, isInitialLoad = false, appendToDom = true) {
     console.log('[MessageRenderer renderMessage] Received message:', JSON.parse(JSON.stringify(message))); // Log incoming message
     const { chatMessagesDiv, electronAPI, markedInstance, uiHelper } = mainRendererReferences;
     const globalSettings = mainRendererReferences.globalSettingsRef.get();
@@ -687,7 +799,7 @@ async function renderMessage(message, isInitialLoad = false) {
         });
     }
 
-    // Determine avatar color and URL to use
+    // 先确定颜色值（但不应用）
     let avatarColorToUse;
     let avatarUrlToUse; // This was the missing variable
     if (message.role === 'user') {
@@ -698,12 +810,18 @@ async function renderMessage(message, isInitialLoad = false) {
             avatarColorToUse = message.avatarColor;
             avatarUrlToUse = message.avatarUrl;
         } else if (currentSelectedItem) {
-            avatarColorToUse = currentSelectedItem.config?.avatarCalculatedColor;
+            avatarColorToUse = currentSelectedItem.config?.avatarCalculatedColor
+                            || currentSelectedItem.avatarCalculatedColor
+                            || currentSelectedItem.config?.avatarColor
+                            || currentSelectedItem.avatarColor;
             avatarUrlToUse = currentSelectedItem.avatarUrl;
         }
     }
 
-    chatMessagesDiv.appendChild(messageItem);
+    // 先添加到DOM
+    if (appendToDom) {
+        chatMessagesDiv.appendChild(messageItem);
+    }
 
     if (message.isThinking) {
         contentDiv.innerHTML = `<span class="thinking-indicator">${message.content || '思考中'}<span class="thinking-indicator-dots">...</span></span>`;
@@ -730,7 +848,15 @@ async function renderMessage(message, isInitialLoad = false) {
             textToRender = transformVCPChatCanvas(textToRender);
         }
         
-        const processedContent = preprocessFullContent(textToRender, globalSettings);
+        // --- 按“对话轮次”计算深度 ---
+        // 如果是新消息，它此时还不在 history 数组里，先临时加进去计算
+        const historyForDepthCalc = currentChatHistory.some(m => m.id === message.id)
+            ? [...currentChatHistory]
+            : [...currentChatHistory, message];
+        const depth = calculateDepthByTurns(message.id, historyForDepthCalc);
+        // --- 深度计算结束 ---
+
+        const processedContent = preprocessFullContent(textToRender, globalSettings, message.role, depth);
         let rawHtml = markedInstance.parse(processedContent);
         
         // Create a temporary div to apply emoticon fixes before setting innerHTML
@@ -747,70 +873,113 @@ async function renderMessage(message, isInitialLoad = false) {
             }
         });
         
-        setContentAndProcessImages(contentDiv, tempDiv.innerHTML, message.id);
-        contentProcessor.processRenderedContent(contentDiv);
-        
-        // After content is rendered, check if we need to run animations
-        if (globalSettings.enableAgentBubbleTheme) {
-            processAnimationsInContent(contentDiv);
+            // Synchronously set the base HTML content
+            const finalHtml = tempDiv.innerHTML;
+            contentDiv.innerHTML = finalHtml;
+
+            // Define the post-processing logic as a function.
+            // This allows us to control WHEN it gets executed.
+            const runPostRenderProcessing = () => {
+                // This function should only be called when messageItem is connected to the DOM.
+                
+                // Process images, attachments, and synchronous content first.
+                setContentAndProcessImages(contentDiv, finalHtml, message.id);
+                renderAttachments(message, contentDiv);
+                contentProcessor.processRenderedContent(contentDiv);
+
+                // Defer TreeWalker-based highlighters with a hardcoded delay to ensure the DOM is stable.
+                setTimeout(() => {
+                    if (contentDiv && contentDiv.isConnected) {
+                        contentProcessor.runTextHighlights(contentDiv);
+                    }
+                }, 0);
+
+                // Finally, process any animations.
+                if (globalSettings.enableAgentBubbleTheme) {
+                    processAnimationsInContent(contentDiv);
+                }
+            };
+
+            // If we are appending directly to the DOM, schedule the processing immediately.
+            if (appendToDom) {
+                // We still use requestAnimationFrame to ensure the element is painted before we process it.
+                requestAnimationFrame(runPostRenderProcessing);
+            } else {
+                // If not, attach the processing function to the element itself.
+                // The caller (e.g., a batch renderer) will be responsible for executing it
+                // AFTER the element has been attached to the DOM.
+                messageItem._vcp_process = runPostRenderProcessing;
+            }
         }
-    }
     
-    // Avatar Color Application (after messageItem is in DOM)
+    // 然后应用颜色（现在 messageItem.isConnected 是 true）
     if ((message.role === 'user' || message.role === 'assistant') && avatarImg && senderNameDiv) {
         const applyColorToElements = (colorStr) => {
-            if (colorStr && messageItem.isConnected) { // Check if still in DOM
-                senderNameDiv.style.color = colorStr;
-                avatarImg.style.borderColor = colorStr;
+            if (colorStr) {
+                console.log(`[DEBUG] Applying color ${colorStr} to message item ${messageItem.dataset.messageId}`);
+                messageItem.style.setProperty('--dynamic-avatar-color', colorStr);
+                
+                // 后备方案：直接应用到avatarImg
+                if (avatarImg) {
+                    avatarImg.style.borderColor = colorStr;
+                    avatarImg.style.borderWidth = '2px';
+                    avatarImg.style.borderStyle = 'solid';
+                }
+            } else {
+                console.log(`[DEBUG] No color to apply, using default`);
+                messageItem.style.removeProperty('--dynamic-avatar-color');
             }
         };
 
-        if (avatarColorToUse) { // If a specific color was passed (e.g. for group member or persisted user/agent color)
+        if (avatarColorToUse) {
             applyColorToElements(avatarColorToUse);
         } else if (avatarUrlToUse && !avatarUrlToUse.includes('default_')) { // No persisted color, try to extract
             const dominantColor = await getDominantAvatarColor(avatarUrlToUse);
-            applyColorToElements(dominantColor);
-            if (dominantColor && messageItem.isConnected) { // If extracted and still in DOM, try to persist
-                let typeToSave, idToSaveFor;
-                if (message.role === 'user') {
-                    typeToSave = 'user'; idToSaveFor = 'user_global';
-                } else if (message.isGroupMessage && message.agentId) {
-                    typeToSave = 'agent'; idToSaveFor = message.agentId; // Save for the specific group member
-                } else if (currentSelectedItem && currentSelectedItem.type === 'agent') {
-                    typeToSave = 'agent'; idToSaveFor = currentSelectedItem.id; // Current agent
-                }
+            if (dominantColor) { // Successfully extracted a color
+                applyColorToElements(dominantColor);
+                if (messageItem.isConnected) { // If extracted and still in DOM, try to persist
+                    let typeToSave, idToSaveFor;
+                    if (message.role === 'user') {
+                        typeToSave = 'user'; idToSaveFor = 'user_global';
+                    } else if (message.isGroupMessage && message.agentId) {
+                        typeToSave = 'agent'; idToSaveFor = message.agentId; // Save for the specific group member
+                    } else if (currentSelectedItem && currentSelectedItem.type === 'agent') {
+                        typeToSave = 'agent'; idToSaveFor = currentSelectedItem.id; // Current agent
+                    }
 
-                if (typeToSave && idToSaveFor) {
-                    electronAPI.saveAvatarColor({ type: typeToSave, id: idToSaveFor, color: dominantColor })
-                        .then(result => {
-                            if (result.success) {
-                                if (typeToSave === 'user') {
-                                     mainRendererReferences.globalSettingsRef.set({...globalSettings, userAvatarCalculatedColor: dominantColor });
-                                } else if (typeToSave === 'agent' && idToSaveFor === currentSelectedItem.id && currentSelectedItem.config) {
-                                    // Update currentSelectedItem.config if it's the active agent
-                                    currentSelectedItem.config.avatarCalculatedColor = dominantColor;
+                    if (typeToSave && idToSaveFor) {
+                        electronAPI.saveAvatarColor({ type: typeToSave, id: idToSaveFor, color: dominantColor })
+                            .then(result => {
+                                if (result.success) {
+                                    if (typeToSave === 'user') {
+                                        mainRendererReferences.globalSettingsRef.set({...globalSettings, userAvatarCalculatedColor: dominantColor });
+                                    } else if (typeToSave === 'agent' && idToSaveFor === currentSelectedItem.id) {
+                                        if (currentSelectedItem.config) { // Handle nested structure
+                                            currentSelectedItem.config.avatarCalculatedColor = dominantColor;
+                                        } else { // Handle flat structure
+                                            currentSelectedItem.avatarCalculatedColor = dominantColor;
+                                        }
+                                    }
                                 }
-                                // For group messages, the individual agent's config isn't directly held in currentSelectedItem.config
-                                // The color is applied directly to the message. If persistence is needed for each group member,
-                                // it should happen when their main config is loaded/saved.
-                            }
-                        });
+                            });
+                    }
                 }
+            } else { // Failed to extract color (e.g., CORS issue), apply a default border
+                avatarImg.style.borderColor = 'var(--border-color)';
             }
         } else { // Default avatar or no URL, reset to theme defaults
-            senderNameDiv.style.color = message.role === 'user' ? 'var(--secondary-text)' : 'var(--highlight-text)';
-            avatarImg.style.borderColor = 'transparent';
+            // Remove the custom property. The CSS will automatically use its fallback values.
+            messageItem.style.removeProperty('--dynamic-avatar-color');
         }
     }
 
 
-    // Render attachments using the new helper function
-    renderAttachments(message, contentDiv);
-    
-   if (!message.isThinking) {
-       contentProcessor.processRenderedContent(contentDiv);
-   }
+    // Attachments and content processing are now deferred within a requestAnimationFrame
+    // to prevent race conditions during history loading. See the block above.
    
+   // The responsibility of updating the history array is now moved to the caller (e.g., chatManager.handleSendMessage)
+   // to ensure a single source of truth and prevent race conditions.
+   /*
    if (!isInitialLoad && !message.isThinking) {
         const currentChatHistoryArray = mainRendererReferences.currentChatHistoryRef.get();
         currentChatHistoryArray.push(message);
@@ -821,11 +990,11 @@ async function renderMessage(message, isInitialLoad = false) {
                 electronAPI.saveChatHistory(currentSelectedItem.id, mainRendererReferences.currentTopicIdRef.get(), currentChatHistoryArray);
              } else if (currentSelectedItem.type === 'group') {
                 // Group history is usually saved by groupchat.js in main process after AI response
-                // If we need to save user's message immediately for groups too, add IPC for it.
-                // For now, this saveChatHistory call is agent-specific.
              }
         }
-    } else if (isInitialLoad && message.isThinking) {
+    }
+    */
+    if (isInitialLoad && message.isThinking) {
         // This case should ideally not happen if thinking messages aren't persisted.
         // If it does, remove the transient thinking message.
         const currentChatHistoryArray = mainRendererReferences.currentChatHistoryRef.get();
@@ -840,7 +1009,9 @@ async function renderMessage(message, isInitialLoad = false) {
 
    // Highlighting is now part of processRenderedContent
    
-   mainRendererReferences.uiHelper.scrollToBottom();
+   if (appendToDom) {
+       mainRendererReferences.uiHelper.scrollToBottom();
+   }
    return messageItem;
 }
 
@@ -858,6 +1029,8 @@ async function finalizeStreamedMessage(messageId, finishReason, context) {
     // 我们现在只传递必要的元数据。
     await streamManager.finalizeStreamedMessage(messageId, finishReason, context);
 }
+
+
 
 /**
  * Renders a full, non-streamed message, replacing a 'thinking' placeholder.
@@ -925,7 +1098,7 @@ async function renderFullMessage(messageId, fullContent, agentName, agentId) {
 
     // --- Update DOM ---
     const globalSettings = mainRendererReferences.globalSettingsRef.get();
-    const processedFinalText = preprocessFullContent(fullContent, globalSettings);
+    const processedFinalText = preprocessFullContent(fullContent, globalSettings, 'assistant');
     let rawHtml = markedInstance.parse(processedFinalText);
 
     // Create a temporary div to apply emoticon fixes before setting innerHTML
@@ -944,8 +1117,16 @@ async function renderFullMessage(messageId, fullContent, agentName, agentId) {
 
     setContentAndProcessImages(contentDiv, tempDiv.innerHTML, messageId);
 
-    // Apply post-processing
+    // Apply post-processing in two steps
+    // Step 1: Synchronous processing
     contentProcessor.processRenderedContent(contentDiv);
+
+    // Step 2: Asynchronous, deferred highlighting for DOM stability with a hardcoded delay
+    setTimeout(() => {
+        if (contentDiv && contentDiv.isConnected) {
+            contentProcessor.runTextHighlights(contentDiv);
+        }
+    }, 0);
 
     // After content is rendered, check if we need to run animations
     if (globalSettings.enableAgentBubbleTheme) {
@@ -966,7 +1147,14 @@ function updateMessageContent(messageId, newContent) {
     const globalSettings = globalSettingsRef.get();
     let textToRender = (typeof newContent === 'string') ? newContent : (newContent?.text || "[内容格式异常]");
     
-    const processedContent = preprocessFullContent(textToRender, globalSettings);
+    // --- 深度计算 (用于历史消息渲染) ---
+    const currentChatHistoryForUpdate = mainRendererReferences.currentChatHistoryRef.get();
+    const messageInHistory = currentChatHistoryForUpdate.find(m => m.id === messageId);
+    
+    // --- 按“对话轮次”计算深度 ---
+    const depthForUpdate = calculateDepthByTurns(messageId, currentChatHistoryForUpdate);
+    // --- 深度计算结束 ---
+    const processedContent = preprocessFullContent(textToRender, globalSettings, messageInHistory?.role || 'assistant', depthForUpdate);
     let rawHtml = markedInstance.parse(processedContent);
 
     const tempDiv = document.createElement('div');
@@ -982,21 +1170,229 @@ function updateMessageContent(messageId, newContent) {
         }
     });
 
-    setContentAndProcessImages(contentDiv, tempDiv.innerHTML, messageId);
-    contentProcessor.processRenderedContent(contentDiv);
+    // --- Post-Render Processing (aligned with renderMessage logic) ---
 
-    // Re-render attachments if they exist in the new content object
-    const messageInHistory = mainRendererReferences.currentChatHistoryRef.get().find(m => m.id === messageId);
+    // 1. Set content and process images
+    setContentAndProcessImages(contentDiv, tempDiv.innerHTML, messageId);
+
+    // 2. Re-render attachments if they exist
     if (messageInHistory) {
-        // First, remove any existing attachments container
         const existingAttachments = contentDiv.querySelector('.message-attachments');
         if (existingAttachments) existingAttachments.remove();
-        // Then, render new ones if they exist
         renderAttachments({ ...messageInHistory, content: newContent }, contentDiv);
+    }
+
+    // 3. Synchronous processing (KaTeX, buttons, etc.)
+    contentProcessor.processRenderedContent(contentDiv);
+
+    // 4. Asynchronous, deferred highlighting for DOM stability
+    setTimeout(() => {
+        if (contentDiv && contentDiv.isConnected) {
+            contentProcessor.runTextHighlights(contentDiv);
+        }
+    }, 0);
+
+    // 5. Re-run animations
+    if (globalSettings.enableAgentBubbleTheme) {
+        processAnimationsInContent(contentDiv);
     }
 }
 
 // Expose methods to renderer.js
+/**
+ * Renders a complete chat history with progressive loading for better UX.
+ * First shows the latest 5 messages, then loads older messages in batches of 10.
+ * @param {Array<Message>} history The chat history to render.
+ * @param {Object} options Rendering options
+ * @param {number} options.initialBatch - Number of latest messages to show first (default: 5)
+ * @param {number} options.batchSize - Size of subsequent batches (default: 10)
+ * @param {number} options.batchDelay - Delay between batches in ms (default: 100)
+ */
+async function renderHistory(history, options = {}) {
+    const {
+        initialBatch = 5,
+        batchSize = 10,
+        batchDelay = 100
+    } = options;
+
+    // 核心修复：在开始批量渲染前，只等待一次依赖项。
+    await emoticonUrlFixer.initialize(mainRendererReferences.electronAPI);
+
+    if (!history || history.length === 0) {
+        return Promise.resolve();
+    }
+
+    // 如果消息数量很少，直接使用原来的方式渲染
+    if (history.length <= initialBatch) {
+        return renderHistoryLegacy(history);
+    }
+
+    console.log(`[MessageRenderer] 开始分批渲染 ${history.length} 条消息，首批 ${initialBatch} 条，后续每批 ${batchSize} 条`);
+
+    // 分离最新的消息和历史消息
+    const latestMessages = history.slice(-initialBatch);
+    const olderMessages = history.slice(0, -initialBatch);
+
+    // 第一阶段：立即渲染最新的消息
+    await renderMessageBatch(latestMessages, true);
+    console.log(`[MessageRenderer] 首批 ${latestMessages.length} 条最新消息已渲染`);
+
+    // 第二阶段：分批渲染历史消息（从旧到新）
+    if (olderMessages.length > 0) {
+        await renderOlderMessagesInBatches(olderMessages, batchSize, batchDelay);
+    }
+
+    // 最终滚动到底部
+    mainRendererReferences.uiHelper.scrollToBottom();
+    console.log(`[MessageRenderer] 所有 ${history.length} 条消息渲染完成`);
+}
+
+/**
+ * 渲染一批消息
+ * @param {Array<Message>} messages 要渲染的消息数组
+ * @param {boolean} scrollToBottom 是否滚动到底部
+ */
+async function renderMessageBatch(messages, scrollToBottom = false) {
+    const fragment = document.createDocumentFragment();
+    const messageElements = [];
+
+    // 在内存中创建所有消息元素
+    for (const msg of messages) {
+        const messageElement = await renderMessage(msg, true, false);
+        if (messageElement) {
+            messageElements.push(messageElement);
+        }
+    }
+
+    // 一次性添加到 fragment
+    messageElements.forEach(el => fragment.appendChild(el));
+    
+    // 使用 requestAnimationFrame 确保 DOM 更新不阻塞 UI
+    return new Promise(resolve => {
+        requestAnimationFrame(() => {
+            // Step 1: Append all elements to the DOM at once.
+            mainRendererReferences.chatMessagesDiv.appendChild(fragment);
+            
+            // Step 2: Now that they are in the DOM, run the deferred processing for each.
+            messageElements.forEach(el => {
+                if (typeof el._vcp_process === 'function') {
+                    el._vcp_process();
+                    delete el._vcp_process; // Clean up to avoid memory leaks
+                }
+            });
+
+            if (scrollToBottom) {
+                mainRendererReferences.uiHelper.scrollToBottom();
+            }
+            resolve();
+        });
+    });
+}
+
+/**
+ * 分批渲染历史消息
+ * @param {Array<Message>} olderMessages 历史消息数组
+ * @param {number} batchSize 每批大小
+ * @param {number} batchDelay 批次间延迟
+ */
+async function renderOlderMessagesInBatches(olderMessages, batchSize, batchDelay) {
+    const totalBatches = Math.ceil(olderMessages.length / batchSize);
+    
+    // 从最新的历史消息开始，向前渲染（这样插入顺序就是正确的）
+    for (let i = totalBatches - 1; i >= 0; i--) {
+        const startIndex = i * batchSize;
+        const endIndex = Math.min(startIndex + batchSize, olderMessages.length);
+        const batch = olderMessages.slice(startIndex, endIndex);
+        
+        console.log(`[MessageRenderer] 渲染历史消息批次 ${totalBatches - i}/${totalBatches} (${batch.length} 条)`);
+        
+        // 创建批次的 fragment
+        const batchFragment = document.createDocumentFragment();
+        
+        const elementsForProcessing = [];
+        for (const msg of batch) {
+            const messageElement = await renderMessage(msg, true, false);
+            if (messageElement) {
+                batchFragment.appendChild(messageElement);
+                elementsForProcessing.push(messageElement);
+            }
+        }
+        
+        // 将批次插入到已渲染内容的最前面（在系统消息之后）
+        await new Promise(resolve => {
+            requestAnimationFrame(() => {
+                const chatMessagesDiv = mainRendererReferences.chatMessagesDiv;
+                
+                // 找到第一个非系统消息作为插入点
+                let insertPoint = chatMessagesDiv.firstChild;
+                while (insertPoint && insertPoint.classList && insertPoint.classList.contains('topic-timestamp-bubble')) {
+                    insertPoint = insertPoint.nextSibling;
+                }
+                
+                if (insertPoint) {
+                    chatMessagesDiv.insertBefore(batchFragment, insertPoint);
+                } else {
+                    chatMessagesDiv.appendChild(batchFragment);
+                }
+
+                // Run processors for the newly added batch
+                elementsForProcessing.forEach(el => {
+                    if (typeof el._vcp_process === 'function') {
+                        el._vcp_process();
+                        delete el._vcp_process;
+                    }
+                });
+
+                resolve();
+            });
+        });
+        
+        // 批次间延迟，避免阻塞 UI
+        if (i > 0 && batchDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, batchDelay));
+        }
+    }
+}
+
+/**
+ * 原始的历史渲染方法（用于少量消息的情况）
+ * @param {Array<Message>} history 聊天历史
+ */
+async function renderHistoryLegacy(history) {
+    const fragment = document.createDocumentFragment();
+    const allMessageElements = [];
+
+    // Phase 1: Create all message elements in memory without appending to DOM
+    for (const msg of history) {
+        const messageElement = await renderMessage(msg, true, false);
+        if (messageElement) {
+            allMessageElements.push(messageElement);
+        }
+    }
+
+    // Phase 2: Append all created elements at once using a DocumentFragment
+    allMessageElements.forEach(el => fragment.appendChild(el));
+    
+    return new Promise(resolve => {
+        requestAnimationFrame(() => {
+            // Step 1: Append all elements to the DOM.
+            mainRendererReferences.chatMessagesDiv.appendChild(fragment);
+
+            // Step 2: Run the deferred processing for each element now that it's attached.
+            allMessageElements.forEach(el => {
+                if (typeof el._vcp_process === 'function') {
+                    el._vcp_process();
+                    delete el._vcp_process; // Clean up
+                }
+            });
+
+            mainRendererReferences.uiHelper.scrollToBottom();
+            resolve();
+        });
+    });
+}
+
+
 window.messageRenderer = {
     initializeMessageRenderer,
     setCurrentSelectedItem, // Keep for renderer.js to call
@@ -1006,6 +1402,9 @@ window.messageRenderer = {
     setCurrentItemAvatarColor, // Renamed
     setUserAvatarColor,
     renderMessage,
+    renderHistory, // Expose the new progressive batch rendering function
+    renderHistoryLegacy, // Expose the legacy rendering for compatibility
+    renderMessageBatch, // Expose batch rendering utility
     startStreamingMessage,
     appendStreamChunk,
     finalizeStreamedMessage,
@@ -1013,6 +1412,18 @@ window.messageRenderer = {
     clearChat,
     removeMessageById,
     updateMessageContent, // Expose the new function
+    isMessageInitialized: (messageId) => {
+        // Check if message exists in DOM or is being tracked by streamManager
+        const messageInDom = mainRendererReferences.chatMessagesDiv?.querySelector(`.message-item[data-message-id="${messageId}"]`);
+        if (messageInDom) return true;
+        
+        // Also check if streamManager is tracking this message
+        if (streamManager && typeof streamManager.isMessageInitialized === 'function') {
+            return streamManager.isMessageInitialized(messageId);
+        }
+        
+        return false;
+    },
     summarizeTopicFromMessages: async (history, agentName) => { // Example: Keep this if it's generic enough
         // This function was passed in, so it's likely defined in renderer.js or another module.
         // If it's meant to be internal to messageRenderer, its logic would go here.
@@ -1022,11 +1433,12 @@ window.messageRenderer = {
         }
         return null;
     },
-setContextMenuDependencies: (deps) => {
-    if (contextMenu && typeof contextMenu.setContextMenuDependencies === 'function') {
-        contextMenu.setContextMenuDependencies(deps);
-    } else {
-        console.error("contextMenu or setContextMenuDependencies not available.");
+    setContextMenuDependencies: (deps) => {
+        if (contextMenu && typeof contextMenu.setContextMenuDependencies === 'function') {
+            contextMenu.setContextMenuDependencies(deps);
+        } else {
+            console.error("contextMenu or setContextMenuDependencies not available.");
+        }
     }
-}
 };
+

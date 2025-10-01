@@ -17,7 +17,7 @@ const fileManager = require('../fileManager');
  * @param {function} context.startSelectionListener - Function to start the selection listener.
  */
 function initialize(mainWindow, context) {
-    const { AGENT_DIR, USER_DATA_DIR, APP_DATA_ROOT_IN_PROJECT, NOTES_AGENT_ID, getMusicState, fileWatcher } = context;
+    const { AGENT_DIR, USER_DATA_DIR, APP_DATA_ROOT_IN_PROJECT, NOTES_AGENT_ID, getMusicState, fileWatcher, agentConfigManager } = context;
 
     // Ensure the watcher is in a clean state on initialization
     if (fileWatcher) {
@@ -46,7 +46,14 @@ function initialize(mainWindow, context) {
             newTopicsArray.push(...topicMap.values());
             agentConfig.topics = newTopicsArray;
 
-            await fs.writeJson(agentConfigPath, agentConfig, { spaces: 2 });
+            if (agentConfigManager) {
+                await agentConfigManager.updateAgentConfig(agentId, config => ({
+                    ...config,
+                    topics: newTopicsArray
+                }));
+            } else {
+                await fs.writeJson(agentConfigPath, agentConfig, { spaces: 2 });
+            }
             return { success: true };
         } catch (error) {
             console.error(`Error saving topic order for agent ${agentId}:`, error);
@@ -135,14 +142,35 @@ function initialize(mainWindow, context) {
             const configPath = path.join(AGENT_DIR, agentId, 'config.json');
             if (!await fs.pathExists(configPath)) return { error: `保存话题标题失败: Agent ${agentId} 的配置文件不存在。` };
             
-            let config = await fs.readJson(configPath);
+            let config;
+            try {
+                config = await fs.readJson(configPath);
+            } catch (e) {
+                console.error(`读取Agent ${agentId} 配置文件失败 (save-agent-topic-title):`, e);
+                return { error: `读取配置文件失败: ${e.message}` };
+            }
             if (!config.topics || !Array.isArray(config.topics)) return { error: `保存话题标题失败: Agent ${agentId} 没有话题列表。` };
 
             const topicIndex = config.topics.findIndex(t => t.id === topicId);
             if (topicIndex === -1) return { error: `保存话题标题失败: Agent ${agentId} 中未找到 ID 为 ${topicId} 的话题。` };
 
-            config.topics[topicIndex].name = newTitle;
-            await fs.writeJson(configPath, config, { spaces: 2 });
+            if (agentConfigManager) {
+                await agentConfigManager.updateAgentConfig(agentId, existingConfig => {
+                    const updatedConfig = { ...existingConfig };
+                    const topicIndex = updatedConfig.topics.findIndex(t => t.id === topicId);
+                    if (topicIndex !== -1) {
+                        updatedConfig.topics[topicIndex].name = newTitle;
+                    }
+                    return updatedConfig;
+                });
+                // 重新读取配置以获取最新的topics
+                const updatedConfig = await agentConfigManager.readAgentConfig(agentId);
+                return { success: true, topics: updatedConfig.topics };
+            } else {
+                config.topics[topicIndex].name = newTitle;
+                await fs.writeJson(configPath, config, { spaces: 2 });
+                return { success: true, topics: config.topics };
+            }
             return { success: true, topics: config.topics }; 
         } catch (error) {
             console.error(`保存Agent ${agentId} 话题 ${topicId} 标题为 "${newTitle}" 失败:`, error);
@@ -193,8 +221,15 @@ function initialize(mainWindow, context) {
                     return config.topics;
                 } else { 
                     const defaultTopics = [{ id: "default", name: "主要对话", createdAt: Date.now() }];
-                    config.topics = defaultTopics;
-                    await fs.writeJson(configPath, config, { spaces: 2 });
+                    if (agentConfigManager) {
+                        await agentConfigManager.updateAgentConfig(agentId, existingConfig => ({
+                            ...existingConfig,
+                            topics: defaultTopics
+                        }));
+                    } else {
+                        config.topics = defaultTopics;
+                        await fs.writeJson(configPath, config, { spaces: 2 });
+                    }
                     return defaultTopics;
                 }
             }
@@ -210,13 +245,29 @@ function initialize(mainWindow, context) {
             const configPath = path.join(AGENT_DIR, agentId, 'config.json');
             if (!await fs.pathExists(configPath)) return { error: `Agent ${agentId} 的配置文件不存在。` };
             
-            const config = await fs.readJson(configPath);
-            if (!config.topics || !Array.isArray(config.topics)) config.topics = []; 
+            let config;
+            try {
+                config = await fs.readJson(configPath);
+            } catch (e) {
+                console.error(`读取Agent ${agentId} 配置文件失败 (create-new-topic-for-agent):`, e);
+                return { error: `读取配置文件失败: ${e.message}` };
+            }
+            if (!config.topics || !Array.isArray(config.topics)) config.topics = [];
 
             const newTopicId = `topic_${Date.now()}`;
             const newTopic = { id: newTopicId, name: topicName || `新话题 ${config.topics.length + 1}`, createdAt: Date.now() };
-            config.topics.push(newTopic);
-            await fs.writeJson(configPath, config, { spaces: 2 });
+            
+            if (agentConfigManager) {
+                const result = await agentConfigManager.updateAgentConfig(agentId, existingConfig => ({
+                    ...existingConfig,
+                    topics: [...(existingConfig.topics || []), newTopic]
+                }));
+                const updatedConfig = await agentConfigManager.readAgentConfig(agentId);
+                config.topics = updatedConfig.topics;
+            } else {
+                config.topics.push(newTopic);
+                await fs.writeJson(configPath, config, { spaces: 2 });
+            }
 
             const topicHistoryDir = path.join(USER_DATA_DIR, agentId, 'topics', newTopicId);
             await fs.ensureDir(topicHistoryDir);
@@ -234,7 +285,13 @@ function initialize(mainWindow, context) {
             const configPath = path.join(AGENT_DIR, agentId, 'config.json');
             if (!await fs.pathExists(configPath)) return { error: `Agent ${agentId} 的配置文件不存在。` };
             
-            let config = await fs.readJson(configPath);
+            let config;
+            try {
+                config = await fs.readJson(configPath);
+            } catch (e) {
+                console.error(`读取Agent ${agentId} 配置文件失败 (delete-topic):`, e);
+                return { error: `读取配置文件失败: ${e.message}` };
+            }
             if (!config.topics || !Array.isArray(config.topics)) return { error: `Agent ${agentId} 没有话题列表可供删除。` };
 
             const initialTopicCount = config.topics.length;
@@ -250,7 +307,14 @@ function initialize(mainWindow, context) {
                 await fs.writeJson(path.join(defaultTopicHistoryDir, 'history.json'), [], { spaces: 2 });
             }
 
-            await fs.writeJson(configPath, config, { spaces: 2 });
+            if (agentConfigManager) {
+                await agentConfigManager.updateAgentConfig(agentId, existingConfig => ({
+                    ...existingConfig,
+                    topics: config.topics
+                }));
+            } else {
+                await fs.writeJson(configPath, config, { spaces: 2 });
+            }
 
             const topicDataDir = path.join(USER_DATA_DIR, agentId, 'topics', topicIdToDelete);
             if (await fs.pathExists(topicDataDir)) await fs.remove(topicDataDir);
@@ -488,7 +552,11 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
                         // 如果有text字段，使用它
                         return { ...msg, content: String(msg.content.text) };
                     } else if (Array.isArray(msg.content)) {
-                        // 如果是数组（多模态消息），保持原样
+                        // 如果是仅包含一个文本部分的多模态消息，则将其简化为纯字符串，以兼容旧的注入逻辑
+                        if (msg.content.length === 1 && msg.content[0].type === 'text' && typeof msg.content[0].text === 'string') {
+                            return { ...msg, content: msg.content[0].text };
+                        }
+                        // 对于真正的多模态消息（例如，包含图片）或空数组，保持原样
                         return msg;
                     } else {
                         // 否则转为JSON字符串
@@ -784,7 +852,9 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
             } else { // Non-streaming
                 console.log('VCP响应: 非流式处理');
                 const vcpResponse = await response.json();
-                return vcpResponse; // Return full response for non-streaming
+                // For non-streaming, wrap the response with the original context
+                // so the renderer knows where to save the history.
+                return { response: vcpResponse, context };
             }
     
         } catch (error) {
@@ -798,76 +868,6 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
         }
     });
 
-    ipcMain.on('send-voice-chat-message', async (event, { agentId, history, thinkingMessageId }) => {
-        const replyToWindow = BrowserWindow.fromWebContents(event.sender);
-        if (!replyToWindow || replyToWindow.isDestroyed()) {
-            console.error('Voice chat reply window is not available.');
-            return;
-        }
-
-        try {
-            const settingsPath = path.join(APP_DATA_ROOT_IN_PROJECT, 'settings.json');
-            const settings = await fs.readJson(settingsPath);
-
-            const agentConfigPath = path.join(AGENT_DIR, agentId, 'config.json');
-            if (!await fs.pathExists(agentConfigPath)) {
-                throw new Error(`Agent config for ${agentId} not found.`);
-            }
-            const agentConfig = await fs.readJson(agentConfigPath);
-
-            const voiceModePromptInjection = "\n\n当前处于语音模式中，你的回复应当口语化，内容简短直白。由于用户输入同样是语音识别模型构成，注意自主判断、理解其中的同音错别字或者错误语义识别。";
-            const systemPrompt = (agentConfig.systemPrompt || '').replace(/\{\{AgentName\}\}/g, agentConfig.name) + voiceModePromptInjection;
-
-            const messagesForVCP = [{ role: 'system', content: systemPrompt }];
-            const historyForVCP = history.map(msg => ({ role: msg.role, content: msg.content }));
-            messagesForVCP.push(...historyForVCP);
-
-            const modelConfig = {
-                model: agentConfig.model,
-                temperature: agentConfig.temperature,
-                stream: false, // Force non-streaming
-                max_tokens: agentConfig.maxOutputTokens,
-                top_p: agentConfig.top_p,
-                top_k: agentConfig.top_k
-            };
-
-            const response = await fetch(settings.vcpServerUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${settings.vcpApiKey}`
-                },
-                body: JSON.stringify({
-                    messages: messagesForVCP,
-                    ...modelConfig
-                })
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`VCP server error: ${response.status} ${errorText}`);
-            }
-
-            const responseData = await response.json();
-            const fullText = responseData.choices?.[0]?.message?.content || '';
-
-            if (!replyToWindow.isDestroyed()) {
-                replyToWindow.webContents.send('voice-chat-reply', {
-                    thinkingMessageId,
-                    fullText
-                });
-            }
-
-        } catch (error) {
-            console.error('Error handling voice chat message:', error);
-            if (!replyToWindow.isDestroyed()) {
-                replyToWindow.webContents.send('voice-chat-reply', {
-                    thinkingMessageId,
-                    error: error.message
-                });
-            }
-        }
-    });
 
     ipcMain.handle('interrupt-vcp-request', async (event, { messageId }) => {
         try {

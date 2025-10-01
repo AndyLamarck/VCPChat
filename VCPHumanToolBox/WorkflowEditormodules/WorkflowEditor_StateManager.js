@@ -423,17 +423,55 @@
 
         // 工作流序列化
         serialize() {
+            console.log('[StateManager] Starting serialization...');
+            console.log('[StateManager] Current nodes in state:', this.state.nodes.size);
+            console.log('[StateManager] Current connections in state:', this.state.connections.size);
+            
             const nodes = {};
             this.state.nodes.forEach((node, id) => {
-                nodes[id] = { ...node };
+                console.log(`[StateManager] Serializing node ${id}:`, {
+                    type: node.type,
+                    pluginId: node.pluginId,
+                    name: node.name || 'unnamed'
+                });
+                
+                // 复制节点数据，但排除图片上传器的base64数据
+                const nodeData = { ...node };
+                
+                // 如果是图片上传节点，移除base64数据以减小文件大小
+                if (node.type === 'imageUpload' || node.pluginId === 'imageUpload' || 
+                    (node.type === 'auxiliary' && node.pluginId === 'imageUpload')) {
+                    
+                    // 移除base64数据，但保留文件名等元信息
+                    if (nodeData.uploadedImage) {
+                        nodeData.uploadedImage = {
+                            ...nodeData.uploadedImage,
+                            base64Data: null // 清除base64数据
+                        };
+                    }
+                    
+                    // 也清除旧格式的base64数据
+                    if (nodeData.uploadedImageData) {
+                        delete nodeData.uploadedImageData;
+                    }
+                    
+                    console.log(`[StateManager] Excluded base64 data from image upload node: ${id}`);
+                }
+                
+                nodes[id] = nodeData;
             });
 
             const connections = {};
             this.state.connections.forEach((connection, id) => {
+                console.log(`[StateManager] Serializing connection ${id}:`, {
+                    source: connection.sourceNodeId,
+                    target: connection.targetNodeId,
+                    param: connection.targetParam
+                });
                 connections[id] = { ...connection };
             });
 
-            return {
+            const serializedData = {
                 version: '1.0',
                 name: this.state.workflowName,
                 id: this.state.workflowId,
@@ -446,6 +484,15 @@
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
+            
+            console.log('[StateManager] Serialization completed:', {
+                nodeCount: Object.keys(nodes).length,
+                connectionCount: Object.keys(connections).length,
+                workflowName: serializedData.name,
+                workflowId: serializedData.id
+            });
+            
+            return serializedData;
         }
 
         // 工作流反序列化
@@ -472,6 +519,20 @@
                 if (data.nodes) {
                     console.log('[StateManager] Loading nodes:', Object.keys(data.nodes));
                     Object.entries(data.nodes).forEach(([id, nodeData]) => {
+                        // 对图片上传节点进行特殊处理
+                        if (nodeData.type === 'imageUpload' || nodeData.pluginId === 'imageUpload' || 
+                            (nodeData.type === 'auxiliary' && nodeData.pluginId === 'imageUpload')) {
+                            
+                            // 如果图片上传节点没有base64数据，设置为未上传状态
+                            if (nodeData.uploadedImage && !nodeData.uploadedImage.base64Data) {
+                                console.log(`[StateManager] Image upload node ${id} loaded without base64 data, setting to empty state`);
+                                // 清除上传状态，让节点显示为未上传状态
+                                delete nodeData.uploadedImage;
+                                delete nodeData.uploadedImageData;
+                                delete nodeData.uploadedFileName;
+                            }
+                        }
+                        
                         this.state.nodes.set(id, nodeData);
                     });
                 }
@@ -487,8 +548,21 @@
                 // 更新计数器
                 this.updateCounters();
 
-                // 发出工作流加载事件
-                this.emit('workflowLoaded', data);
+                // 发出工作流加载事件，延迟确保所有节点都已渲染
+                setTimeout(() => {
+                    this.emit('workflowLoaded', data);
+                    
+                    // 恢复节点的动态输入参数
+                    Object.entries(data.nodes).forEach(([id, nodeData]) => {
+                        if (nodeData.dynamicInputs && Array.isArray(nodeData.dynamicInputs) && nodeData.dynamicInputs.length > 0) {
+                            console.log('[StateManager] Restoring dynamic inputs for node:', id, nodeData.dynamicInputs);
+                            // 通知画布管理器更新节点输入
+                            if (window.WorkflowEditor_CanvasManager && window.WorkflowEditor_CanvasManager.updateNodeInputs) {
+                                window.WorkflowEditor_CanvasManager.updateNodeInputs(id, nodeData.dynamicInputs);
+                            }
+                        }
+                    });
+                }, 100);
                 
                 console.log('[StateManager] Workflow deserialization completed successfully');
                 return true;

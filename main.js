@@ -19,6 +19,7 @@ const windowHandlers = require('./modules/ipc/windowHandlers'); // Import window
 const settingsHandlers = require('./modules/ipc/settingsHandlers'); // Import settings IPC handlers
 const fileDialogHandlers = require('./modules/ipc/fileDialogHandlers'); // Import file dialog handlers
 const { getAgentConfigById, ...agentHandlers } = require('./modules/ipc/agentHandlers'); // Import agent handlers
+const regexHandlers = require('./modules/ipc/regexHandlers'); // Import regex handlers
 const chatHandlers = require('./modules/ipc/chatHandlers'); // Import chat handlers
 const groupChatHandlers = require('./modules/ipc/groupChatHandlers'); // Import group chat handlers
 const sovitsHandlers = require('./modules/ipc/sovitsHandlers'); // Import SovitsTTS IPC handlers
@@ -275,12 +276,22 @@ if (!gotTheLock) {
     fs.ensureDirSync(CANVAS_CACHE_DIR); // Ensure the canvas cache directory exists
     fileManager.initializeFileManager(USER_DATA_DIR, AGENT_DIR); // Initialize FileManager
     groupChat.initializePaths({ APP_DATA_ROOT_IN_PROJECT, AGENT_DIR, USER_DATA_DIR, SETTINGS_FILE }); // Initialize GroupChat paths
-    settingsHandlers.initialize({ SETTINGS_FILE, USER_AVATAR_FILE, AGENT_DIR }); // Initialize settings handlers
+
+    const SettingsManager = require('./modules/utils/settingsManager');
+    const AgentConfigManager = require('./modules/utils/agentConfigManager');
+    const settingsManager = new SettingsManager(SETTINGS_FILE);
+    const agentConfigManager = new AgentConfigManager(AGENT_DIR);
+    
+    settingsManager.startCleanupTimer();
+    settingsManager.startAutoBackup(USER_DATA_DIR); // Start auto backup
+    agentConfigManager.startCleanupTimer(); // Start agent config cleanup
+
+    settingsHandlers.initialize({ SETTINGS_FILE, USER_AVATAR_FILE, AGENT_DIR, settingsManager, agentConfigManager }); // Initialize settings handlers
 
    // Function to fetch and cache models from the VCP server
    async function fetchAndCacheModels() {
        try {
-           const settings = await fs.readJson(SETTINGS_FILE);
+           const settings = await settingsManager.readSettings();
            const vcpServerUrl = settings.vcpServerUrl;
            const vcpApiKey = settings.vcpApiKey; // Get the API key
 
@@ -461,8 +472,11 @@ if (!gotTheLock) {
         USER_AVATAR_FILE,
         getSelectionListenerStatus: assistantHandlers.getSelectionListenerStatus,
         stopSelectionListener: assistantHandlers.stopSelectionListener,
-        startSelectionListener: assistantHandlers.startSelectionListener
+        startSelectionListener: assistantHandlers.startSelectionListener,
+        settingsManager,
+        agentConfigManager
     });
+    regexHandlers.initialize({ AGENT_DIR });
     chatHandlers.initialize(mainWindow, {
         AGENT_DIR,
         USER_DATA_DIR,
@@ -472,7 +486,8 @@ if (!gotTheLock) {
         stopSelectionListener: assistantHandlers.stopSelectionListener,
         startSelectionListener: assistantHandlers.startSelectionListener,
         getMusicState: musicHandlers.getMusicState,
-        fileWatcher // 注入文件监控器
+        fileWatcher, // 注入文件监控器
+        agentConfigManager
     });
 
     // New dedicated watcher IPC handlers
@@ -499,7 +514,7 @@ if (!gotTheLock) {
     sovitsHandlers.initialize(mainWindow); // Initialize SovitsTTS handlers
     musicHandlers.initialize({ mainWindow, openChildWindows, APP_DATA_ROOT_IN_PROJECT, startAudioEngine, stopAudioEngine });
     diceHandlers.initialize({ projectRoot: PROJECT_ROOT });
-    themeHandlers.initialize({ mainWindow, openChildWindows, projectRoot: PROJECT_ROOT, APP_DATA_ROOT_IN_PROJECT });
+    themeHandlers.initialize({ mainWindow, openChildWindows, projectRoot: PROJECT_ROOT, APP_DATA_ROOT_IN_PROJECT, settingsManager: settingsManager });
     emoticonHandlers.initialize({ SETTINGS_FILE, APP_DATA_ROOT_IN_PROJECT });
     emoticonHandlers.setupEmoticonHandlers();
     canvasHandlers.initialize({ mainWindow, openChildWindows, CANVAS_CACHE_DIR });
@@ -507,7 +522,7 @@ if (!gotTheLock) {
      // --- Distributed Server Initialization ---
      (async () => {
         try {
-            const settings = await fs.readJson(SETTINGS_FILE);
+            const settings = await settingsManager.readSettings();
             if (settings.enableDistributedServer) {
                 console.log('[Main] Distributed server is enabled. Initializing...');
                 const config = {

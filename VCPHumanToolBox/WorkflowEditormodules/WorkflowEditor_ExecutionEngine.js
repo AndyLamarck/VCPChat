@@ -10,15 +10,21 @@
             
             this.stateManager = null;
             this.pluginManager = null;
+            this.connectionManager = null; // 连接管理器
             this.isExecuting = false;
             this.executionQueue = [];
             this.nodeResults = new Map(); // 存储节点执行结果
             this.nodeInputData = new Map(); // 存储节点输入数据
+            this.executedNodes = new Set(); // 全局执行状态跟踪
+            this.executingNodes = new Set(); // 正在执行的节点
             
             // 从 settings.json 读取配置
             this.loadSettings();
             
             WorkflowEditor_ExecutionEngine.instance = this;
+            try {
+                console.log('[ExecutionEngine] URLRenderer router v2 loaded');
+            } catch (_) {}
         }
 
         static getInstance() {
@@ -73,13 +79,28 @@
             this.isExecuting = true;
             this.nodeResults.clear();
             this.nodeInputData.clear();
+            this.executedNodes.clear(); // 清空执行状态
+            this.executingNodes.clear(); // 清空正在执行状态
             
             try {
                 console.log('[ExecutionEngine] Starting workflow execution');
                 
                 // 获取所有节点和连接
                 const nodes = this.stateManager.getAllNodes();
+                
+                // 简化：直接从 StateManager 获取连接（单一数据源）
                 const connections = this.stateManager.getAllConnections();
+                console.log('[ExecutionEngine] 从 StateManager 获取连接:', connections.length);
+                
+                // 调试信息：输出连接详情
+                if (connections.length > 0) {
+                    console.log('[ExecutionEngine] 连接详情:');
+                    connections.forEach((conn, index) => {
+                        console.log(`  ${index + 1}. ${conn.sourceNodeId} → ${conn.targetNodeId} (${conn.targetParam})`);
+                    });
+                } else {
+                    console.warn('[ExecutionEngine] ⚠️ 没有找到任何连接，请检查连接是否正确保存');
+                }
                 
                 // 构建执行图
                 const executionGraph = this.buildExecutionGraph(nodes, connections);
@@ -111,6 +132,14 @@
 
         // 构建执行图
         buildExecutionGraph(nodes, connections) {
+            console.log(`[ExecutionEngine] 构建执行图 - 节点数: ${nodes.length}, 连接数: ${connections.length}`);
+            
+            // 打印所有连接信息
+            connections.forEach((connection, index) => {
+                console.log(`[ExecutionEngine] 连接 ${index + 1}: ${connection.sourceNodeId} -> ${connection.targetNodeId}`);
+                console.log(`[ExecutionEngine] 连接详情:`, connection);
+            });
+            
             const graph = new Map();
             
             // 初始化图节点
@@ -127,6 +156,9 @@
                 const sourceGraphNode = graph.get(connection.sourceNodeId);
                 const targetGraphNode = graph.get(connection.targetNodeId);
                 
+                console.log(`[ExecutionEngine] 处理连接: ${connection.sourceNodeId} -> ${connection.targetNodeId}`);
+                console.log(`[ExecutionEngine] 源节点存在: ${!!sourceGraphNode}, 目标节点存在: ${!!targetGraphNode}`);
+                
                 if (sourceGraphNode && targetGraphNode) {
                     sourceGraphNode.outputs.push({
                         targetNodeId: connection.targetNodeId,
@@ -140,7 +172,16 @@
                         targetPort: connection.targetPort,
                         connection: connection
                     });
+                    
+                    console.log(`[ExecutionEngine] ✓ 连接已添加到执行图`);
+                } else {
+                    console.warn(`[ExecutionEngine] ✗ 连接无效，跳过: ${connection.sourceNodeId} -> ${connection.targetNodeId}`);
                 }
+            });
+            
+            // 打印最终的执行图结构
+            graph.forEach((graphNode, nodeId) => {
+                console.log(`[ExecutionEngine] 节点 ${nodeId}: ${graphNode.inputs.length} 个输入, ${graphNode.outputs.length} 个输出`);
             });
             
             return graph;
@@ -175,88 +216,126 @@
         // 执行节点链 - 使用拓扑排序避免循环依赖问题
         async executeNodeChain(startNode, executionGraph) {
             console.log(`[ExecutionEngine] 开始执行节点链，起始节点: ${startNode.id}`);
+            console.log(`[ExecutionEngine] 执行图包含 ${executionGraph.size} 个节点`);
+            
+            // 打印执行图的连接信息
+            executionGraph.forEach((graphNode, nodeId) => {
+                console.log(`[ExecutionEngine] 节点 ${nodeId}: ${graphNode.inputs.length} 个输入, ${graphNode.outputs.length} 个输出`);
+                graphNode.inputs.forEach((input, i) => {
+                    console.log(`[ExecutionEngine]   输入 ${i + 1}: 来自节点 ${input.sourceNodeId}`);
+                });
+                graphNode.outputs.forEach((output, i) => {
+                    console.log(`[ExecutionEngine]   输出 ${i + 1}: 到节点 ${output.targetNodeId}`);
+                });
+            });
             
             // 使用队列进行广度优先执行
             const executionQueue = [startNode.id];
-            const executed = new Set();
-            const executing = new Set();
+            let maxIterations = executionGraph.size * 3; // 防止无限循环
+            let iterations = 0;
             
-            while (executionQueue.length > 0) {
+            while (executionQueue.length > 0 && iterations < maxIterations) {
+                iterations++;
                 const nodeId = executionQueue.shift();
                 
+                console.log(`[ExecutionEngine] 处理队列中的节点: ${nodeId} (迭代 ${iterations})`);
+                
                 // 跳过已执行的节点
-                if (executed.has(nodeId)) {
+                if (this.executedNodes.has(nodeId)) {
+                    console.log(`[ExecutionEngine] 节点 ${nodeId} 已执行，跳过`);
                     continue;
                 }
                 
                 // 检查循环依赖
-                if (executing.has(nodeId)) {
+                if (this.executingNodes.has(nodeId)) {
                     console.warn(`[ExecutionEngine] 跳过正在执行的节点: ${nodeId}`);
                     continue;
                 }
                 
                 const graphNode = executionGraph.get(nodeId);
                 if (!graphNode) {
-                    console.error(`[ExecutionEngine] 节点 ${nodeId} 不存在`);
+                    console.error(`[ExecutionEngine] 节点 ${nodeId} 不存在于执行图中`);
                     continue;
                 }
                 
-                // 检查所有输入节点是否已执行
-                const allInputsReady = graphNode.inputs.every(input => executed.has(input.sourceNodeId));
+                // 检查所有输入节点是否已执行（使用全局执行状态）
+                const allInputsReady = graphNode.inputs.length === 0 || 
+                    graphNode.inputs.every(input => {
+                        const ready = this.executedNodes.has(input.sourceNodeId);
+                        console.log(`[ExecutionEngine] 检查输入节点 ${input.sourceNodeId}: ${ready ? '已执行' : '未执行'}`);
+                        return ready;
+                    });
+                
+                console.log(`[ExecutionEngine] 节点 ${nodeId} 所有输入是否就绪: ${allInputsReady}`);
                 
                 if (!allInputsReady) {
                     // 将节点重新加入队列末尾，等待输入节点执行完成
+                    console.log(`[ExecutionEngine] 节点 ${nodeId} 输入未就绪，重新加入队列`);
                     executionQueue.push(nodeId);
                     continue;
                 }
                 
-                // 收集输入数据
-                this.collectInputData(nodeId, graphNode);
+                // 新的统一数据传播机制下，数据已经在 propagateOutputData 中直接展开到顶层
+                // 不再需要单独的数据收集步骤
                 
                 // 检查是否所有必需参数都已准备好
                 if (this.areRequiredInputsReady(nodeId, graphNode.node)) {
-                    executing.add(nodeId);
+                    this.executingNodes.add(nodeId);
                     
                     try {
+                        console.log(`[ExecutionEngine] 开始执行节点: ${nodeId}`);
+                        
                         // 执行节点
                         await this.executeNode(graphNode.node);
+                        
+                        console.log(`[ExecutionEngine] 节点 ${nodeId} 执行成功，开始传播数据`);
                         
                         // 传播输出数据到下游节点
                         this.propagateOutputData(nodeId, graphNode);
                         
                         // 将下游节点加入执行队列
                         graphNode.outputs.forEach(output => {
-                            if (!executed.has(output.targetNodeId) && !executionQueue.includes(output.targetNodeId)) {
+                            if (!this.executedNodes.has(output.targetNodeId) && !executionQueue.includes(output.targetNodeId)) {
                                 console.log(`[ExecutionEngine] 将下游节点加入队列: ${output.targetNodeId}`);
                                 executionQueue.push(output.targetNodeId);
+                            } else {
+                                console.log(`[ExecutionEngine] 下游节点 ${output.targetNodeId} 已在队列中或已执行`);
                             }
                         });
                         
-                        executed.add(nodeId);
+                        this.executedNodes.add(nodeId);
                         console.log(`[ExecutionEngine] 节点 ${nodeId} 执行完成`);
                         
                     } catch (error) {
                         console.error(`[ExecutionEngine] 节点 ${nodeId} 执行失败:`, error);
                         throw error;
                     } finally {
-                        executing.delete(nodeId);
+                        this.executingNodes.delete(nodeId);
                     }
                 } else {
-                    console.log(`[ExecutionEngine] 节点 ${nodeId} 输入未准备好，跳过执行`);
-                    executed.add(nodeId); // 标记为已处理，避免无限循环
+                    console.log(`[ExecutionEngine] 节点 ${nodeId} 必需输入未准备好，标记为已处理`);
+                    this.executedNodes.add(nodeId); // 标记为已处理，避免无限循环
                 }
             }
             
-            console.log(`[ExecutionEngine] 节点链执行完成，已执行节点:`, Array.from(executed));
+            if (iterations >= maxIterations) {
+                console.warn(`[ExecutionEngine] 达到最大迭代次数 ${maxIterations}，可能存在循环依赖`);
+            }
+            
+            console.log(`[ExecutionEngine] 节点链执行完成，已执行节点:`, Array.from(this.executedNodes));
         }
 
-        // 收集输入数据
         // 收集输入数据
         collectInputData(nodeId, graphNode) {
             const inputData = this.nodeInputData.get(nodeId) || {};
             
+            console.log(`[ExecutionEngine] 开始收集节点 ${nodeId} 的输入数据`);
+            console.log(`[ExecutionEngine] 节点有 ${graphNode.inputs.length} 个输入连接`);
+            
             graphNode.inputs.forEach(input => {
                 const sourceResult = this.nodeResults.get(input.sourceNodeId);
+                console.log(`[ExecutionEngine] 检查源节点 ${input.sourceNodeId} 的结果:`, sourceResult);
+                
                 if (sourceResult) {
                     // 解析JSON数据并支持字段访问
                     const processedData = this.processInputData(sourceResult);
@@ -265,16 +344,21 @@
                     const targetParam = input.targetPort || input.connection?.targetParam || 'input';
                     
                     console.log(`[ExecutionEngine] 收集输入数据: ${input.sourceNodeId} -> ${nodeId}, 参数: ${targetParam}`);
+                    console.log(`[ExecutionEngine] 处理后的数据:`, processedData);
                     
                     // 只有当目标参数名有效时才设置数据
                     if (targetParam && targetParam !== 'undefined') {
                         inputData[targetParam] = processedData;
+                        console.log(`[ExecutionEngine] 成功设置输入参数 ${targetParam}`);
                     } else {
                         console.warn(`[ExecutionEngine] 跳过无效的目标参数名: ${targetParam}`);
                     }
+                } else {
+                    console.warn(`[ExecutionEngine] 源节点 ${input.sourceNodeId} 没有结果数据`);
                 }
             });
             
+            console.log(`[ExecutionEngine] 收集完成，节点 ${nodeId} 的最终输入数据:`, inputData);
             this.nodeInputData.set(nodeId, inputData);
         }
 
@@ -381,14 +465,39 @@
                     return this.executeRegexNode(node, inputData);
                 case 'dataTransform':
                     return this.executeDataTransformNode(node, inputData);
+                case 'codeEdit':
+                    return this.executeCodeEditNode(node, inputData);
                 case 'condition':
-                    return this.executeConditionNode(inputData);
+                    return this.executeConditionNode(node, inputData);
+                case 'loop':
+                    return this.executeLoopNode(node, inputData);
                 case 'delay':
-                    return this.executeDelayNode(inputData);
+                    return this.executeDelayNode(node, inputData);
                 case 'contentInput': // 新增内容输入器节点类型
                     return this.executeContentInputNode(node);
+                case 'urlExtractor': // URL提取器节点类型
+                    return this.executeUrlExtractorNode(node, inputData);
+                case 'imageUpload': // 图片上传节点类型
+                    return this.executeImageUploadNode(node, inputData);
+                case 'aiCompose': // AI拼接器节点类型
+                    return this.executeAiComposeNode(node, inputData);
                 default:
                     throw new Error(`未知的辅助节点类型: ${node.pluginId}`);
+            }
+        }
+
+        // 执行AI拼接器节点（转调 NodeManager 的实现）
+        async executeAiComposeNode(node, inputData) {
+            if (window.WorkflowEditor_NodeManager && window.WorkflowEditor_NodeManager.executeAiComposeNode) {
+                try {
+                    const result = await window.WorkflowEditor_NodeManager.executeAiComposeNode(node, inputData);
+                    return result;
+                } catch (error) {
+                    console.error('[ExecutionEngine] AI拼接器执行失败:', error);
+                    throw error;
+                }
+            } else {
+                throw new Error('AI拼接器功能未加载，请确保相关模块已正确加载');
             }
         }
 
@@ -418,69 +527,30 @@
             // 合并节点配置和输入数据，支持数据引用解析
             const allParams = {};
             
-            // 先添加节点配置中的参数，支持数据引用
+            // 先添加节点配置中的参数，支持模板变量解析
             if (node.config) {
                 for (const [key, value] of Object.entries(node.config)) {
                     const resolvedValue = this._resolveValue(value, inputData);
                     
-                    // 特殊处理：如果解析结果是对象，尝试提取 'output' 属性或将其 JSON 字符串化
+                    // 统一的数据传播机制下，解析结果应该是简单类型
                     if (typeof resolvedValue === 'object' && resolvedValue !== null) {
-                        if (resolvedValue.output !== undefined) {
-                            allParams[key] = String(resolvedValue.output); // 提取 output 属性并转为字符串
-                            console.log(`[ExecutionEngine] 提取对象参数 ${key} 的 'output' 属性: ${allParams[key]}`);
-                        } else {
-                            allParams[key] = JSON.stringify(resolvedValue); // 否则，将整个对象 JSON 字符串化
-                            console.log(`[ExecutionEngine] JSON 字符串化复杂对象参数 ${key}: ${allParams[key]}`);
-                        }
+                        // 对于对象类型，JSON 字符串化
+                        allParams[key] = JSON.stringify(resolvedValue);
+                        console.log(`[ExecutionEngine] JSON 字符串化对象参数 ${key}: ${allParams[key]}`);
                     } else {
-                        allParams[key] = resolvedValue; // 对于非对象类型，直接使用解析后的值
+                        // 对于简单类型，直接使用
+                        allParams[key] = resolvedValue;
                         console.log(`[ExecutionEngine] 添加参数 ${key}: ${allParams[key]}`);
                     }
                 }
             }
             
-            // 再添加输入数据中的参数，支持智能字段提取
-            Object.entries(inputData).forEach(([key, value]) => {
-                // 跳过无效的键名，避免添加undefined参数
-                if (!key || key === 'undefined' || key === 'null') {
-                    console.warn(`[ExecutionEngine] 跳过无效的参数键: ${key}`);
-                    return;
-                }
-                
-                // 仅当 allParams 中没有该键，或者该键的值为 undefined/null/空字符串时，才从 inputData 中添加
-                // 这样可以确保 node.config 中的配置（已解析变量）优先
-                if (allParams[key] === undefined || allParams[key] === null || allParams[key] === '') {
-                    if (value !== null && value !== undefined && value !== '') {
-                        // 如果输入数据是对象，尝试提取有用的字段
-                        if (typeof value === 'object' && value !== null) {
-                            // 智能字段映射：根据参数名称自动提取对应字段
-                            if (key === 'url') {
-                                // 对于url参数，优先查找imageUrl、url等字段
-                                const urlValue = value.imageUrl || value.url || value.downloadUrl || value;
-                                allParams[key] = urlValue;
-                                console.log(`[ExecutionEngine] 智能提取URL字段 ${key}: ${urlValue}`);
-                            } else if (key === 'downloadDir' && value.downloadDir) {
-                                allParams[key] = value.downloadDir;
-                                console.log(`[ExecutionEngine] 提取downloadDir字段: ${value.downloadDir}`);
-                            } else if (value.output !== undefined) { // 增加对 {output: ...} 格式的支持
-                                allParams[key] = String(value.output);
-                                console.log(`[ExecutionEngine] 提取输入数据对象 ${key} 的 'output' 属性: ${allParams[key]}`);
-                            }
-                            else {
-                                // 对于其他复杂对象，不再直接跳过，而是尝试 JSON 字符串化
-                                allParams[key] = JSON.stringify(value);
-                                console.log(`[ExecutionEngine] JSON 字符串化输入数据复杂对象 ${key}: ${allParams[key]}`);
-                            }
-                        } else {
-                            // 简单类型的值直接添加
-                            allParams[key] = value;
-                            console.log(`[ExecutionEngine] 添加简单参数 ${key}: ${value}`);
-                        }
-                    }
-                } else {
-                    console.log(`[ExecutionEngine] 参数 ${key} 已在节点配置中处理，跳过输入数据`);
-                }
-            });
+            // 数据传播的目的是为模板变量提供数据源
+            // 一旦模板变量解析完成，就不需要再添加原始传播数据作为请求参数
+            // 只使用节点配置中已经解析好的参数即可
+            
+            console.log(`[ExecutionEngine] 使用节点配置参数，跳过原始传播数据的添加`);
+            console.log(`[ExecutionEngine] 输入数据仅用于模板变量解析:`, Object.keys(inputData));
             
             console.log(`[ExecutionEngine] 合并后的参数:`, allParams);
             
@@ -492,7 +562,7 @@
             requestParams.push(`maid:「始」${this.USER_NAME}「末」`);
             requestParams.push(`tool_name:「始」${node.pluginId}「末」`);
             
-            // 简化逻辑：从插件管理器获取插件信息，检查是否需要command参数
+            // 智能命令匹配：根据节点配置和插件信息选择正确的命令
             let needsCommand = false;
             let commandToUse = null;
             
@@ -501,17 +571,98 @@
                 const pluginInfo = this.pluginManager.getPluginInfo(pluginKey);
                 
                 if (pluginInfo && pluginInfo.commands && pluginInfo.commands.length > 0) {
-                    const commandInfo = pluginInfo.commands[0]; // 使用第一个命令
-                    needsCommand = commandInfo.needsCommand || false;
+                    console.log(`[ExecutionEngine] 插件 ${node.pluginId} 找到 ${pluginInfo.commands.length} 个命令`);
                     
-                    if (needsCommand) {
-                        // 优先使用节点配置的command，然后使用插件默认command
-                        commandToUse = node.commandId || node.selectedCommand || 
-                                     (node.config && node.config.command) || 
-                                     commandInfo.command;
+                    // 优先使用节点配置中的命令ID或名称
+                    const nodeCommandId = node.config && node.config.command;
+                    const nodeSelectedCommand = node.selectedCommand;
+                    const nodeCommandIdFromNode = node.commandId;
+                    
+                    console.log(`[ExecutionEngine] 节点命令配置: commandId=${nodeCommandId}, selectedCommand=${nodeSelectedCommand}, commandIdFromNode=${nodeCommandIdFromNode}`);
+                    
+                    // 智能匹配命令
+                    let matchedCommand = null;
+                    
+                    // 1. 首先尝试通过命令ID精确匹配
+                    if (nodeCommandId || nodeSelectedCommand || nodeCommandIdFromNode) {
+                        const targetCommandId = nodeCommandId || nodeSelectedCommand || nodeCommandIdFromNode;
+                        
+                        matchedCommand = pluginInfo.commands.find(cmd => 
+                            cmd.id === targetCommandId || 
+                            cmd.name === targetCommandId ||
+                            cmd.command === targetCommandId
+                        );
+                        
+                        if (matchedCommand) {
+                            console.log(`[ExecutionEngine] 通过命令ID匹配到命令: ${matchedCommand.name || matchedCommand.id}`);
+                        }
                     }
                     
-                    console.log(`[ExecutionEngine] 插件 ${node.pluginId} needsCommand: ${needsCommand}, command: ${commandToUse}`);
+                    // 2. 如果没有匹配到，尝试通过参数匹配
+                    if (!matchedCommand) {
+                        console.log(`[ExecutionEngine] 尝试通过参数匹配命令`);
+                        
+                        // 分析节点配置中的参数，找到最匹配的命令
+                        const nodeParams = node.config || {};
+                        const paramKeys = Object.keys(nodeParams);
+                        
+                        console.log(`[ExecutionEngine] 节点参数: ${paramKeys.join(', ')}`);
+                        
+                        // 为每个命令计算匹配度
+                        let bestMatch = null;
+                        let bestScore = 0;
+                        
+                        for (const cmd of pluginInfo.commands) {
+                            let score = 0;
+                            
+                            // 检查命令的参数是否与节点参数匹配
+                            if (cmd.parameters && Array.isArray(cmd.parameters)) {
+                                for (const param of cmd.parameters) {
+                                    if (paramKeys.includes(param.name)) {
+                                        score += 1;
+                                    }
+                                }
+                            }
+                            
+                            // 检查命令名称是否与插件ID相关
+                            if (cmd.name && cmd.name.toLowerCase().includes(node.pluginId.toLowerCase())) {
+                                score += 0.5;
+                            }
+                            
+                            console.log(`[ExecutionEngine] 命令 ${cmd.name || cmd.id} 匹配度: ${score}`);
+                            
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestMatch = cmd;
+                            }
+                        }
+                        
+                        if (bestMatch && bestScore > 0) {
+                            matchedCommand = bestMatch;
+                            console.log(`[ExecutionEngine] 通过参数匹配选择命令: ${bestMatch.name || bestMatch.id} (匹配度: ${bestScore})`);
+                        }
+                    }
+                    
+                    // 3. 如果还是没有匹配到，使用第一个命令作为默认
+                    if (!matchedCommand) {
+                        matchedCommand = pluginInfo.commands[0];
+                        console.log(`[ExecutionEngine] 使用默认命令: ${matchedCommand.name || matchedCommand.id}`);
+                    }
+                    
+                    // 设置命令信息
+                    needsCommand = matchedCommand.needsCommand || false;
+                    
+                    if (needsCommand) {
+                        // 优先使用匹配到的命令的command，然后使用节点配置
+                        commandToUse = matchedCommand.command || 
+                                     (node.config && node.config.command) || 
+                                     node.selectedCommand || 
+                                     node.commandId ||
+                                     matchedCommand.name ||
+                                     matchedCommand.id;
+                    }
+                    
+                    console.log(`[ExecutionEngine] 最终选择 - 插件 ${node.pluginId} needsCommand: ${needsCommand}, command: ${commandToUse}`);
                 } else {
                     console.log(`[ExecutionEngine] 未找到插件 ${pluginKey} 的信息，跳过command参数`);
                 }
@@ -596,9 +747,9 @@
                 return responseText;
             }
             
-            // 提取结果数据 - 优先返回完整的数据对象
+            // 直接使用插件输出，不进行过滤 - 保持数据流透明
             let result = data;
-            console.log(`[ExecutionEngine] 初步提取的结果:`, result);
+            console.log(`[ExecutionEngine] 插件原始输出:`, result);
             
             // 如果数据有特定的结构，尝试提取有用的信息
             if (data.result && typeof data.result.content === 'string') {
@@ -614,10 +765,13 @@
                 }
             }
             
-            // 确保返回的是完整的数据对象，包含所有字段（如imageUrl等）
-            if (typeof result === 'string' && data && typeof data === 'object') {
-                console.log(`[ExecutionEngine] 结果是字符串但原始数据是对象，返回原始数据以保留所有字段`);
-                result = data;
+            // 添加执行元数据，但不影响原始数据
+            if (result && typeof result === 'object') {
+                result._metadata = {
+                    executedBy: node.id,
+                    timestamp: new Date().toISOString(),
+                    executionId: this.executionId || 'unknown'
+                };
             }
             
             // 检查结果中是否包含错误信息
@@ -773,53 +927,473 @@
             }
         }
 
-        // 执行条件节点
-        executeConditionNode(inputData) {
-            const { condition, trueValue, falseValue } = inputData;
-            return condition ? trueValue : falseValue;
+        // 执行代码编辑节点
+        async executeCodeEditNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行代码编辑节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            const config = node.config || {};
+            const { language = 'javascript', code = '', operation = 'format' } = config;
+            
+            // 获取输入内容
+            let inputContent = '';
+            if (inputData.input !== undefined) {
+                if (typeof inputData.input === 'object') {
+                    inputContent = JSON.stringify(inputData.input, null, 2);
+                } else {
+                    inputContent = String(inputData.input);
+                }
+            } else if (inputData.code) {
+                inputContent = inputData.code;
+            } else if (code) {
+                inputContent = code;
+            }
+            
+            console.log('[ExecutionEngine] 代码编辑 - 输入内容:', inputContent.substring(0, 200) + '...');
+            console.log('[ExecutionEngine] 代码编辑 - 语言:', language, '操作:', operation);
+            
+            try {
+                let result;
+                
+                switch (operation) {
+                    case 'format':
+                        result = this.formatCode(inputContent, language);
+                        break;
+                    
+                    case 'minify':
+                        result = this.minifyCode(inputContent, language);
+                        break;
+                    
+                    case 'validate':
+                        result = this.validateCode(inputContent, language);
+                        break;
+                    
+                    case 'execute':
+                        if (language === 'javascript') {
+                            try {
+                                // 创建安全的执行环境
+                                const func = new Function('input', 'inputData', `
+                                    ${inputContent}
+                                    // 如果代码没有返回值，返回输入数据
+                                    if (typeof result !== 'undefined') return result;
+                                    return input;
+                                `);
+                                result = func(inputData.input, inputData);
+                            } catch (error) {
+                                throw new Error(`JavaScript执行失败: ${error.message}`);
+                            }
+                        } else {
+                            throw new Error(`不支持执行 ${language} 代码`);
+                        }
+                        break;
+                    
+                    default:
+                        result = inputContent;
+                }
+                
+                console.log('[ExecutionEngine] 代码编辑结果:', result);
+                
+                // 使用自定义输出参数名
+                const outputParamName = config.outputParamName || 'output';
+                return { [outputParamName]: result };
+                
+            } catch (error) {
+                console.error('[ExecutionEngine] 代码编辑执行失败:', error);
+                throw new Error(`代码编辑失败: ${error.message}`);
+            }
         }
 
-        // 执行延时节点
-        async executeDelayNode(inputData) {
-            const { delay = 1000, data } = inputData;
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return data;
+        // 执行条件判断节点
+        async executeConditionNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行条件判断节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            const config = node.config || {};
+            const { condition, operator = '==', value = '' } = config;
+            
+            // 获取输入值
+            let inputValue = inputData.input;
+            if (inputValue === undefined && Object.keys(inputData).length > 0) {
+                inputValue = Object.values(inputData)[0]; // 使用第一个输入值
+            }
+            
+            console.log('[ExecutionEngine] 条件判断 - 输入值:', inputValue, '操作符:', operator, '比较值:', value);
+            
+            try {
+                let result = false;
+                
+                switch (operator) {
+                    case '==':
+                        result = inputValue == value;
+                        break;
+                    case '!=':
+                        result = inputValue != value;
+                        break;
+                    case '>':
+                        result = Number(inputValue) > Number(value);
+                        break;
+                    case '<':
+                        result = Number(inputValue) < Number(value);
+                        break;
+                    case '>=':
+                        result = Number(inputValue) >= Number(value);
+                        break;
+                    case '<=':
+                        result = Number(inputValue) <= Number(value);
+                        break;
+                    case 'contains':
+                        result = String(inputValue).includes(String(value));
+                        break;
+                    case 'startsWith':
+                        result = String(inputValue).startsWith(String(value));
+                        break;
+                    case 'endsWith':
+                        result = String(inputValue).endsWith(String(value));
+                        break;
+                    default:
+                        // 自定义条件表达式
+                        if (condition) {
+                            const func = new Function('input', 'value', `return ${condition}`);
+                            result = func(inputValue, value);
+                        }
+                }
+                
+                console.log('[ExecutionEngine] 条件判断结果:', result);
+                
+                // 根据结果返回到不同的输出端口
+                if (result) {
+                    return { true: inputValue, result: true };
+                } else {
+                    return { false: inputValue, result: false };
+                }
+                
+            } catch (error) {
+                console.error('[ExecutionEngine] 条件判断执行失败:', error);
+                throw new Error(`条件判断失败: ${error.message}`);
+            }
         }
 
-        // 执行URL渲染器节点
+        // 执行循环控制节点
+        async executeLoopNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行循环控制节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            const config = node.config || {};
+            const { loopType = 'forEach', maxIterations = 100 } = config;
+            
+            let items = [];
+            let inputValue = inputData.input;
+            
+            // 获取循环项目
+            if (inputData.items && Array.isArray(inputData.items)) {
+                items = inputData.items;
+            } else if (Array.isArray(inputValue)) {
+                items = inputValue;
+            } else if (inputValue !== undefined) {
+                items = [inputValue]; // 单个值转为数组
+            }
+            
+            console.log('[ExecutionEngine] 循环控制 - 类型:', loopType, '项目数:', items.length, '最大迭代:', maxIterations);
+            
+            try {
+                const results = [];
+                let iterations = Math.min(items.length, maxIterations);
+                
+                switch (loopType) {
+                    case 'forEach':
+                        for (let i = 0; i < iterations; i++) {
+                            results.push({
+                                item: items[i],
+                                index: i,
+                                total: items.length
+                            });
+                        }
+                        break;
+                    
+                    case 'times':
+                        const times = Math.min(Number(inputValue) || 1, maxIterations);
+                        for (let i = 0; i < times; i++) {
+                            results.push({
+                                item: i + 1,
+                                index: i,
+                                total: times
+                            });
+                        }
+                        break;
+                    
+                    case 'while':
+                        // 简单的while循环实现
+                        let count = 0;
+                        while (count < maxIterations && inputValue) {
+                            results.push({
+                                item: count + 1,
+                                index: count,
+                                total: maxIterations
+                            });
+                            count++;
+                            // 简单条件：如果输入是数字，递减到0
+                            if (typeof inputValue === 'number') {
+                                inputValue--;
+                            } else {
+                                break; // 避免无限循环
+                            }
+                        }
+                        break;
+                }
+                
+                console.log('[ExecutionEngine] 循环控制结果:', results.length, '项');
+                
+                return {
+                    output: results,
+                    items: results.map(r => r.item),
+                    count: results.length
+                };
+                
+            } catch (error) {
+                console.error('[ExecutionEngine] 循环控制执行失败:', error);
+                throw new Error(`循环控制失败: ${error.message}`);
+            }
+        }
+
+        // 执行延时等待节点
+        async executeDelayNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行延时等待节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            const config = node.config || {};
+            const { delay = 1000, unit = 'milliseconds' } = config;
+            
+            let delayMs = delay;
+            switch (unit) {
+                case 'seconds':
+                    delayMs = delay * 1000;
+                    break;
+                case 'minutes':
+                    delayMs = delay * 60 * 1000;
+                    break;
+            }
+            
+            console.log('[ExecutionEngine] 延时等待:', delayMs, 'ms');
+            
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            
+            // 返回输入数据
+            return { output: inputData.input || inputData };
+        }
+
+        // 执行URL提取器节点
+        async executeUrlExtractorNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行URL提取器节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            // 调用NodeManager中的URL提取器实现
+            if (window.WorkflowEditor_NodeManager && window.WorkflowEditor_NodeManager.executeUrlExtractorNode) {
+                try {
+                    const result = await window.WorkflowEditor_NodeManager.executeUrlExtractorNode(node, inputData);
+                    console.log('[ExecutionEngine] URL提取器执行结果:', result);
+                    return result;
+                } catch (error) {
+                    console.error('[ExecutionEngine] URL提取器执行失败:', error);
+                    throw error;
+                }
+            } else {
+                throw new Error('URL提取器功能未加载，请确保相关模块已正确加载');
+            }
+        }
+
+        // 执行图片上传节点
+        async executeImageUploadNode(node, inputData) {
+            console.log('[ExecutionEngine] 执行图片上传节点:', node.id);
+            console.log('[ExecutionEngine] 输入数据:', inputData);
+            console.log('[ExecutionEngine] 节点配置:', node.config);
+            
+            // 调用NodeManager中的图片上传节点实现
+            if (window.WorkflowEditor_NodeManager && window.WorkflowEditor_NodeManager.executeImageUploadNode) {
+                try {
+                    const result = await window.WorkflowEditor_NodeManager.executeImageUploadNode(node, inputData);
+                    console.log('[ExecutionEngine] 图片上传节点执行结果:', result);
+                    return result;
+                } catch (error) {
+                    console.error('[ExecutionEngine] 图片上传节点执行失败:', error);
+                    throw error;
+                }
+            } else {
+                throw new Error('图片上传功能未加载，请确保相关模块已正确加载');
+            }
+        }
+
+        // 代码格式化方法
+        formatCode(code, language) {
+            try {
+                switch (language) {
+                    case 'json':
+                        const parsed = JSON.parse(code);
+                        return JSON.stringify(parsed, null, 2);
+                    
+                    case 'javascript':
+                        // 简单的JavaScript格式化
+                        return code
+                            .replace(/;/g, ';\n')
+                            .replace(/{/g, '{\n')
+                            .replace(/}/g, '\n}')
+                            .replace(/,/g, ',\n')
+                            .split('\n')
+                            .map(line => line.trim())
+                            .filter(line => line.length > 0)
+                            .join('\n');
+                    
+                    case 'html':
+                        // 简单的HTML格式化
+                        return code
+                            .replace(/></g, '>\n<')
+                            .replace(/^\s+|\s+$/g, '');
+                    
+                    case 'css':
+                        // 简单的CSS格式化
+                        return code
+                            .replace(/{/g, ' {\n')
+                            .replace(/}/g, '\n}\n')
+                            .replace(/;/g, ';\n')
+                            .replace(/,/g, ',\n');
+                    
+                    default:
+                        return code;
+                }
+            } catch (error) {
+                console.warn('[ExecutionEngine] 代码格式化失败:', error);
+                return code;
+            }
+        }
+
+        // 代码压缩方法
+        minifyCode(code, language) {
+            try {
+                switch (language) {
+                    case 'json':
+                        const parsed = JSON.parse(code);
+                        return JSON.stringify(parsed);
+                    
+                    case 'javascript':
+                        // 简单的JavaScript压缩
+                        return code
+                            .replace(/\s+/g, ' ')
+                            .replace(/;\s/g, ';')
+                            .replace(/{\s/g, '{')
+                            .replace(/\s}/g, '}')
+                            .trim();
+                    
+                    case 'css':
+                        // 简单的CSS压缩
+                        return code
+                            .replace(/\s+/g, ' ')
+                            .replace(/;\s/g, ';')
+                            .replace(/{\s/g, '{')
+                            .replace(/\s}/g, '}')
+                            .trim();
+                    
+                    default:
+                        return code.replace(/\s+/g, ' ').trim();
+                }
+            } catch (error) {
+                console.warn('[ExecutionEngine] 代码压缩失败:', error);
+                return code;
+            }
+        }
+
+        // 代码验证方法
+        validateCode(code, language) {
+            try {
+                switch (language) {
+                    case 'json':
+                        JSON.parse(code);
+                        return { valid: true, message: 'JSON格式正确' };
+                    
+                    case 'javascript':
+                        new Function(code);
+                        return { valid: true, message: 'JavaScript语法正确' };
+                    
+                    case 'html':
+                        // 简单的HTML验证
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(code, 'text/html');
+                        const errors = doc.querySelectorAll('parsererror');
+                        if (errors.length > 0) {
+                            return { valid: false, message: 'HTML格式错误' };
+                        }
+                        return { valid: true, message: 'HTML格式正确' };
+                    
+                    default:
+                        return { valid: true, message: '语法检查不可用' };
+                }
+            } catch (error) {
+                return { valid: false, message: error.message };
+            }
+        }
+
+        // 执行URL渲染器节点 - 使用批量渲染补丁
         executeUrlRendererNode(node, inputData) {
             console.log(`[ExecutionEngine] 执行URL渲染器节点:`, node.id);
             console.log(`[ExecutionEngine] 节点配置:`, node.config);
             console.log(`[ExecutionEngine] 输入数据:`, inputData);
             
+            // 检查是否有批量渲染补丁可用
+            if (window.WorkflowEditor_NodeManager && typeof window.WorkflowEditor_NodeManager.executeUrlRendererNode === 'function') {
+                console.log('[ExecutionEngine] 使用唯一URL渲染入口 (NodeManager.executeUrlRendererNode)');
+                return window.WorkflowEditor_NodeManager.executeUrlRendererNode.call(
+                    window.WorkflowEditor_NodeManager,
+                    node,
+                    inputData
+                );
+            }
+            
+            // 后备方案（理论上不会再走到这里）
             const config = node.config || {};
-            let { urlPath = 'imageUrl', renderType = 'image', width = 300, height = 200 } = node.config || {};
+            let { urlPath = 'imageUrl', renderType = 'image' } = node.config || {};
             
             // 对 urlPath 进行变量解析
             console.log(`[ExecutionEngine] URL渲染器 - 原始urlPath: ${urlPath}`);
-            urlPath = this._resolveValue(urlPath, inputData);
-            console.log(`[ExecutionEngine] URL渲染器 - 解析后urlPath: "${urlPath}", 类型: ${typeof urlPath}`); // 加上双引号方便观察空格
+            const resolvedUrlPath = this._resolveValue(urlPath, inputData);
+            console.log(`[ExecutionEngine] URL渲染器 - 解析后urlPath:`, resolvedUrlPath, `类型: ${typeof resolvedUrlPath}`);
 
             // 从输入数据或配置中获取URL
             let url = null;
             
-            // Debugging: Check the conditions
-            console.log(`[ExecutionEngine] URL渲染器 - Debugging URL check:`);
-            console.log(`[ExecutionEngine]   urlPath 是否为真: ${!!urlPath}`);
-            console.log(`[ExecutionEngine]   urlPath 是否为字符串: ${typeof urlPath === 'string'}`);
-            console.log(`[ExecutionEngine]   urlPath 是否以 'http://' 开头: ${typeof urlPath === 'string' && urlPath.startsWith('http://')}`);
-            console.log(`[ExecutionEngine]   urlPath 是否以 'https://' 开头: ${typeof urlPath === 'string' && urlPath.startsWith('https://')}`);
-            
-            // 首先检查解析后的 urlPath 是否直接是一个URL
-            if (urlPath && (typeof urlPath === 'string') && (urlPath.startsWith('http://') || urlPath.startsWith('https://'))) {
-                url = urlPath;
+            // 检查解析后的结果类型
+            if (Array.isArray(resolvedUrlPath)) {
+                // 如果解析结果是数组，说明 {{input.images}} 被解析成了数组
+                console.log(`[ExecutionEngine] 检测到数组数据，尝试提取第一个URL`);
+                
+                // 尝试从数组中提取URL
+                for (const item of resolvedUrlPath) {
+                    if (typeof item === 'string' && (item.startsWith('http://') || item.startsWith('https://'))) {
+                        url = item;
+                        break;
+                    } else if (typeof item === 'object' && item !== null) {
+                        url = item.url || item.imageUrl || item.src;
+                        if (url) break;
+                    }
+                }
+                
+                console.log(`[ExecutionEngine] 从数组中提取的URL: ${url}`);
+            } 
+            // 检查解析后的 urlPath 是否直接是一个URL字符串
+            else if (resolvedUrlPath && (typeof resolvedUrlPath === 'string') && (resolvedUrlPath.startsWith('http://') || resolvedUrlPath.startsWith('https://'))) {
+                url = resolvedUrlPath;
                 console.log(`[ExecutionEngine] 从解析后的 urlPath 中获取URL: ${url}`);
             } 
             // 否则，尝试从 inputData 中提取
             else if (inputData.input && typeof inputData.input === 'object') {
-                // 根据 urlPath 配置从输入对象中提取URL
-                // Here, urlPath is NOT a URL, but a path like 'imageUrl' or 'url'
-                url = this._getNestedProperty(inputData.input, urlPath) || inputData.input.imageUrl || inputData.input.url;
+                // 如果 urlPath 仍然是字符串路径，使用它来提取数据
+                if (typeof urlPath === 'string') {
+                    url = this._getNestedProperty(inputData.input, urlPath) || inputData.input.imageUrl || inputData.input.url;
+                } else {
+                    url = inputData.input.imageUrl || inputData.input.url;
+                }
                 console.log(`[ExecutionEngine] 从输入数据中提取URL: ${url}`);
             } else if (inputData.url) {
                 url = inputData.url;
@@ -827,12 +1401,12 @@
             } else if (inputData.imageUrl) {
                 url = inputData.imageUrl;
                 console.log(`[ExecutionEngine] 从输入数据imageUrl字段获取: ${url}`);
-            } else if (node.config.url) { // Changed from config.url to node.config.url
-                url = this._resolveValue(node.config.url, inputData); // Ensure node.config.url is also resolved
+            } else if (node.config.url) {
+                url = this._resolveValue(node.config.url, inputData);
                 console.log(`[ExecutionEngine] 从配置url字段获取: ${url}`);
             }
             
-            console.log(`[ExecutionEngine] 提取的URL:`, url);
+            console.log(`[ExecutionEngine] 最终提取的URL:`, url);
             
             if (!url) {
                 console.warn(`[ExecutionEngine] URL渲染器未找到有效的URL`);
@@ -963,18 +1537,165 @@
             }
             
             if (imageUrl) {
-                const imgHtml = `<img src="${imageUrl}" alt="显示图片" style="max-width: 200px; max-height: 200px;" />`;
+                // 生成包含复制和下载功能的完整HTML结构
+                const imgHtml = `
+                    <div class="image-display-container" style="position: relative; display: inline-block; max-width: 200px;">
+                        <img src="${imageUrl}" alt="显示图片" style="max-width: 100%; max-height: 200px; display: block;" />
+                        <div class="image-controls" style="position: absolute; top: 5px; right: 5px; display: flex; gap: 5px; opacity: 0.8;">
+                            <button class="copy-image-btn" style="background: rgba(0,0,0,0.7); color: white; border: none; border-radius: 3px; padding: 4px; cursor: pointer; font-size: 12px;" title="复制图片">
+                                <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path>
+                                </svg>
+                            </button>
+                            <button class="download-image-btn" style="background: rgba(0,0,0,0.7); color: white; border: none; border-radius: 3px; padding: 4px; cursor: pointer; font-size: 12px;" title="下载图片">
+                                <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
+                                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                `;
                 
                 // 更新节点显示
                 if (this.stateManager) {
                     const nodeElement = document.querySelector(`[data-node-id="${node.id}"] .node-content`);
                     if (nodeElement) {
                         nodeElement.innerHTML = imgHtml;
+                        
+                        // 添加事件监听器
+                        this.addImageControlsEventListeners(nodeElement, imageUrl);
                     }
                 }
             }
             
             return { success: true, imageUrl: imageUrl };
+        }
+
+        // 添加图片控制按钮的事件监听器
+        addImageControlsEventListeners(nodeElement, imageUrl) {
+            const copyBtn = nodeElement.querySelector('.copy-image-btn');
+            const downloadBtn = nodeElement.querySelector('.download-image-btn');
+            
+            if (copyBtn) {
+                copyBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    await this.copyImageToClipboard(imageUrl, copyBtn);
+                });
+            }
+            
+            if (downloadBtn) {
+                downloadBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.downloadImage(imageUrl);
+                });
+            }
+        }
+
+        // 复制图片到剪贴板
+        async copyImageToClipboard(imageUrl, button) {
+            if (!imageUrl || imageUrl === window.location.href) {
+                console.warn('ExecutionEngine: No valid image to copy.');
+                this.showButtonFeedback(button, '无效图片', 'error');
+                return;
+            }
+
+            const originalButtonHTML = button.innerHTML;
+            try {
+                const response = await fetch(imageUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                let blob = await response.blob();
+                let finalBlobType = blob.type || 'image/png';
+
+                // 如果是JPEG，转换为PNG以确保剪贴板兼容性
+                if (blob.type === 'image/jpeg' || blob.type === 'image/jpg') {
+                    console.log('ExecutionEngine: Converting JPEG to PNG for clipboard.');
+                    try {
+                        const imageBitmap = await createImageBitmap(blob);
+                        const canvas = document.createElement('canvas');
+                        canvas.width = imageBitmap.width;
+                        canvas.height = imageBitmap.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(imageBitmap, 0, 0);
+                        blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                        finalBlobType = 'image/png';
+                    } catch (conversionError) {
+                        console.error('ExecutionEngine: Failed to convert JPEG to PNG -', conversionError);
+                    }
+                }
+
+                const item = new ClipboardItem({ [finalBlobType]: blob });
+                await navigator.clipboard.write([item]);
+                console.log('ExecutionEngine: Image copied to clipboard as', finalBlobType);
+                
+                this.showButtonFeedback(button, `
+                    <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;">
+                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path>
+                    </svg>
+                `, 'success');
+                
+            } catch (err) {
+                console.error('ExecutionEngine: Failed to copy image -', err);
+                this.showButtonFeedback(button, '复制失败', 'error');
+            }
+            
+            // 恢复原始按钮内容
+            setTimeout(() => {
+                button.innerHTML = originalButtonHTML;
+            }, 2000);
+        }
+
+        // 下载图片
+        downloadImage(imageUrl) {
+            if (!imageUrl || imageUrl === window.location.href) {
+                console.warn('ExecutionEngine: No valid image to download.');
+                return;
+            }
+
+            try {
+                const link = document.createElement('a');
+                link.href = imageUrl;
+                
+                // 从URL中提取文件名
+                let filename = 'downloaded_image';
+                const urlFilename = imageUrl.substring(imageUrl.lastIndexOf('/') + 1).split('?')[0];
+                const urlExtensionMatch = urlFilename.match(/\.(jpe?g|png|gif|webp|svg)$/i);
+                
+                if (urlExtensionMatch) {
+                    filename = urlFilename;
+                } else {
+                    filename += '.png'; // 默认扩展名
+                }
+                
+                link.download = filename;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                console.log('ExecutionEngine: Image download initiated:', filename);
+            } catch (err) {
+                console.error('ExecutionEngine: Failed to download image -', err);
+            }
+        }
+
+        // 显示按钮反馈
+        showButtonFeedback(button, content, type) {
+            const originalContent = button.innerHTML;
+            button.innerHTML = content;
+            
+            if (type === 'success') {
+                button.style.background = 'rgba(0,128,0,0.8)';
+            } else if (type === 'error') {
+                button.style.background = 'rgba(255,0,0,0.8)';
+            }
+            
+            setTimeout(() => {
+                button.innerHTML = originalContent;
+                button.style.background = 'rgba(0,0,0,0.7)';
+            }, 2000);
         }
 
         // 执行HTML显示节点
@@ -1019,68 +1740,47 @@
             return { success: true, jsonData: jsonData };
         }
 
-        // 传播输出数据
-        // 传播输出数据
+        // 传播输出数据 - 统一的数据传播机制
         propagateOutputData(nodeId, graphNode) {
             const result = this.nodeResults.get(nodeId);
             const sourceNode = graphNode.node;
             console.log(`[ExecutionEngine] 传播节点 ${nodeId} 的输出数据:`, result);
+            console.log(`[ExecutionEngine] 节点有 ${graphNode.outputs.length} 个输出连接`);
             
-            graphNode.outputs.forEach(output => {
+            if (graphNode.outputs.length === 0) {
+                console.log(`[ExecutionEngine] 节点 ${nodeId} 没有输出连接，跳过数据传播`);
+                return;
+            }
+            
+            graphNode.outputs.forEach((output, index) => {
+                console.log(`[ExecutionEngine] 处理输出连接 ${index + 1}:`, output);
+                
                 const targetInputData = this.nodeInputData.get(output.targetNodeId) || {};
+                console.log(`[ExecutionEngine] 目标节点 ${output.targetNodeId} 当前输入数据:`, targetInputData);
                 
-                // 优先使用节点配置的自定义输出参数名
-                let targetParam = output.connection.targetParam || output.targetPort || 'input';
-                let useCustomOutputName = false;
-                
-                // 如果源节点是辅助节点且配置了自定义输出参数名，使用它
-                if (sourceNode.category === 'auxiliary' && sourceNode.config && sourceNode.config.outputParamName) {
-                    targetParam = sourceNode.config.outputParamName;
-                    useCustomOutputName = true;
-                    console.log(`[ExecutionEngine] 使用自定义输出参数名: ${targetParam}`);
-                }
-                
-                // 增强数据传递：支持字段映射和直接访问
-                let dataToPass = result;
-                
-                // 特殊处理：对于正则节点使用自定义输出名时，应该只传递 output 字段
-                if (useCustomOutputName && sourceNode.pluginId === 'regex' && result && typeof result === 'object' && result.output !== undefined) {
-                    dataToPass = result.output;
-                    console.log(`[ExecutionEngine] 正则节点使用自定义输出名，传递 output 字段:`, dataToPass);
-                }
-                // 如果目标参数有特定的字段映射需求，进行智能提取
-                else if (typeof result === 'object' && result !== null) {
-                    // 根据目标参数名进行智能字段映射
-                    switch (targetParam) {
-                        case 'url':
-                        case 'imageUrl':
-                            dataToPass = result.imageUrl || result.url || result.downloadUrl || result;
-                            console.log(`[ExecutionEngine] 智能提取URL字段: ${dataToPass}`);
-                            break;
-                        case 'filePath':
-                            dataToPass = result.filePath || result.path || result.file || result;
-                            break;
-                        case 'text':
-                        case 'content':
-                            dataToPass = result.text || result.content || result.message || result;
-                            break;
-                        default:
-                            // 对于其他参数，如果结果对象中有同名字段，优先使用
-                            if (result.hasOwnProperty(targetParam)) {
-                                dataToPass = result[targetParam];
-                                console.log(`[ExecutionEngine] 使用同名字段 ${targetParam}: ${dataToPass}`);
-                            } else {
-                                dataToPass = result;
-                            }
-                            break;
+                // 统一的数据传播逻辑
+                if (sourceNode.category === 'auxiliary') {
+                    // 辅助节点：已经按照自定义输出名格式化了数据，直接展开到顶层
+                    console.log(`[ExecutionEngine] 辅助节点数据传播 - 展开到顶层`);
+                    if (result && typeof result === 'object') {
+                        Object.assign(targetInputData, result);
+                        console.log(`[ExecutionEngine] 辅助节点数据已展开:`, Object.keys(result));
+                    }
+                } else {
+                    // 插件节点：没有自定义输出名，直接展开完整结果到顶层
+                    console.log(`[ExecutionEngine] 插件节点数据传播 - 展开完整结果到顶层`);
+                    if (result && typeof result === 'object') {
+                        Object.assign(targetInputData, result);
+                        console.log(`[ExecutionEngine] 插件节点数据已展开:`, Object.keys(result));
+                    } else {
+                        // 如果结果不是对象，使用默认键名 'result'
+                        targetInputData.result = result;
+                        console.log(`[ExecutionEngine] 插件节点非对象结果，使用默认键名 'result':`, result);
                     }
                 }
                 
-                targetInputData[targetParam] = dataToPass;
-                
-                console.log(`[ExecutionEngine] 设置节点 ${output.targetNodeId} 的输入参数 ${targetParam}:`, dataToPass);
-                
                 this.nodeInputData.set(output.targetNodeId, targetInputData);
+                console.log(`[ExecutionEngine] 节点 ${output.targetNodeId} 更新后的输入数据:`, targetInputData);
                 
                 // 检查目标节点是否现在可以执行
                 const targetNode = this.stateManager.getNode(output.targetNodeId);
@@ -1122,6 +1822,12 @@
             this.nodeResults.clear();
             this.nodeInputData.clear();
         }
+
+        // 已移除 extractPluginOutput 方法 - 数据流现在完全透明
+        // 插件输出直接传递给下游节点，不进行任何过滤
+
+        // 已移除 cleanPluginOutput 方法 - 不再进行数据清洗
+        // 保持插件输出的完整性和透明性
 
         // 处理输入数据，支持JSON解析
         processInputData(data) {
@@ -1182,49 +1888,64 @@
             const regex = /\{\{(.*?)\}\}/g;
             let resolved = value;
             let match;
-            let hasMatch = false;
 
             // First pass: check if the entire string is a single {{...}} expression
             const fullMatchRegex = /^\{\{(.*?)\}\}$/;
             const fullMatch = value.match(fullMatchRegex);
             if (fullMatch) {
-                const path = fullMatch[1].trim(); // path is 'input.output'
-                if (path.startsWith('input.')) {
-                    let resolvedData = this._getNestedProperty(inputData, path);
-                    // 特殊处理：如果解析结果是对象且包含 'output' 属性，则提取其值
-                    if (typeof resolvedData === 'object' && resolvedData !== null && resolvedData.output !== undefined) {
-                        return String(resolvedData.output); // 返回 'output' 属性的值并转为字符串
-                    }
-                    return resolvedData; // 返回原始解析值，可以是任何类型
-                } else {
-                    console.warn(`[ExecutionEngine] 无法解析的变量路径 (整串匹配): ${path}`);
-                    return value; // Return original value if path is not 'input.xxx'
+                const path = fullMatch[1].trim(); // 例如: 'extractedUrls' 或 'input.extractedUrls'
+                const resolvedData = this._resolveVariablePath(path, inputData);
+                
+                // 特殊处理：如果解析结果是对象且包含 'output' 属性，则提取其值
+                if (typeof resolvedData === 'object' && resolvedData !== null && resolvedData.output !== undefined) {
+                    return String(resolvedData.output); // 返回 'output' 属性的值并转为字符串
                 }
+                return resolvedData; // 返回原始解析值，可以是任何类型
             }
 
             // Second pass: replace multiple {{...}} expressions within a string
             while ((match = regex.exec(value)) !== null) {
-                hasMatch = true;
-                const fullPlaceholder = match[0]; // e.g., {{input.output}}
-                const path = match[1].trim(); // e.g., input.output
+                const fullPlaceholder = match[0]; // 例如: {{extractedUrls}}
+                const path = match[1].trim(); // 例如: extractedUrls
 
-                if (path.startsWith('input.')) {
-                    let resolvedData = this._getNestedProperty(inputData, path);
-                    // 特殊处理：如果解析结果是对象且包含 'output' 属性，则提取其值
-                    if (typeof resolvedData === 'object' && resolvedData !== null && resolvedData.output !== undefined) {
-                        resolvedData = String(resolvedData.output); // 使用 'output' 属性的值并转为字符串
-                    } else if (typeof resolvedData === 'object' && resolvedData !== null) {
-                        resolvedData = JSON.stringify(resolvedData); // 对于其他对象，将其 JSON 字符串化
-                    }
-                    // Replace the placeholder with the string representation of the resolved data
-                    resolved = resolved.replace(fullPlaceholder, resolvedData !== undefined ? String(resolvedData) : '');
-                } else {
-                    console.warn(`[ExecutionEngine] 无法解析的变量路径 (部分匹配): ${path}`);
-                    // If not resolvable, keep the placeholder or replace with empty string
-                    resolved = resolved.replace(fullPlaceholder, ''); // Or keep fullPlaceholder if you want to show it's unresolved
+                let resolvedData = this._resolveVariablePath(path, inputData);
+                
+                // 特殊处理：如果解析结果是对象且包含 'output' 属性，则提取其值
+                if (typeof resolvedData === 'object' && resolvedData !== null && resolvedData.output !== undefined) {
+                    resolvedData = String(resolvedData.output); // 使用 'output' 属性的值并转为字符串
+                } else if (typeof resolvedData === 'object' && resolvedData !== null) {
+                    resolvedData = JSON.stringify(resolvedData); // 对于其他对象，将其 JSON 字符串化
                 }
+                
+                // Replace the placeholder with the string representation of the resolved data
+                resolved = resolved.replace(fullPlaceholder, resolvedData !== undefined ? String(resolvedData) : '');
             }
             return resolved;
+        }
+
+        // 解析变量路径 - 统一的顶层查找机制
+        _resolveVariablePath(path, inputData) {
+            console.log(`[ExecutionEngine] 解析变量路径: ${path}`);
+            console.log(`[ExecutionEngine] 可用输入数据:`, Object.keys(inputData));
+            
+            // 兼容模式：支持 input.xxx 格式（向后兼容）
+            if (path.startsWith('input.')) {
+                const actualPath = path.substring(6); // 移除 "input." 前缀
+                console.log(`[ExecutionEngine] 兼容模式 - 实际路径: ${actualPath}`);
+                return this._getNestedProperty(inputData, actualPath);
+            }
+            
+            // 统一的顶层查找：所有数据都已展开到顶层，直接查找即可
+            // 支持: imageBase64, imageUrl, result, extractedUrls, extractedUrls[0], result.field 等
+            const resolvedData = this._getNestedProperty(inputData, path);
+            
+            if (resolvedData !== undefined) {
+                console.log(`[ExecutionEngine] 顶层查找成功: ${path} ->`, resolvedData);
+                return resolvedData;
+            }
+            
+            console.warn(`[ExecutionEngine] 无法解析变量路径: ${path}`);
+            return undefined;
         }
     }
 

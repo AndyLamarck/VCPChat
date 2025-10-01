@@ -221,8 +221,8 @@ function highlightQuotesInMessage(messageElement) {
                     parent.tagName === 'STYLE' ||
                     parent.tagName === 'SCRIPT' ||
                     parent.tagName === 'PRE' ||
-                    parent.tagName === 'CODE' ||
-                    (parent.hasAttribute && parent.hasAttribute('style'))
+                    parent.tagName === 'CODE'
+                    /* (parent.hasAttribute && parent.hasAttribute('style')) */ // This rule was too aggressive, preventing highlights in AI-generated rich content.
                 ) {
                     return NodeFilter.FILTER_REJECT;
                 }
@@ -236,28 +236,36 @@ function highlightQuotesInMessage(messageElement) {
     let node;
     const nodesToProcess = [];
 
-    while (node = walker.nextNode()) {
-        const parentEl = node.parentElement;
-        // 跳过：父元素内含有子元素（复杂富文本），避免跨标签切割
-        if (!parentEl || parentEl.children.length > 0) continue;
+    try {
+        while ((node = walker.nextNode())) {
+            const parentEl = node.parentElement;
+            // 跳过：父元素内含有子元素（复杂富文本），避免跨标签切割 - This rule was too aggressive and is now disabled to allow highlighting in more complex structures.
+            // if (!parentEl || parentEl.children.length > 0) continue;
 
-        const text = node.nodeValue || '';
-        let match;
-        const matches = [];
-        quoteRegex.lastIndex = 0;
-        while ((match = quoteRegex.exec(text)) !== null) {
-            const contentGroup1 = match[1];
-            const contentGroup2 = match[2];
-            if ((contentGroup1 && contentGroup1.length > 0) || (contentGroup2 && contentGroup2.length > 0)) {
-                matches.push({
-                    index: match.index,
-                    fullMatch: match[0],
-                });
+            const text = node.nodeValue || '';
+            let match;
+            const matches = [];
+            quoteRegex.lastIndex = 0;
+            while ((match = quoteRegex.exec(text)) !== null) {
+                const contentGroup1 = match[1];
+                const contentGroup2 = match[2];
+                if ((contentGroup1 && contentGroup1.length > 0) || (contentGroup2 && contentGroup2.length > 0)) {
+                    matches.push({
+                        index: match.index,
+                        fullMatch: match[0],
+                    });
+                }
+            }
+
+            if (matches.length > 0) {
+                nodesToProcess.push({ node, matches });
             }
         }
-
-        if (matches.length > 0) {
-            nodesToProcess.push({ node, matches });
+    } catch (error) {
+        if (error.message.includes("The provided callback is no longer runnable")) {
+            console.warn("highlightQuotesInMessage: TreeWalker failed, likely due to concurrent DOM modification. Processing collected nodes and stopping traversal.");
+        } else {
+            console.error("highlightQuotesInMessage: Error during TreeWalker traversal.", error);
         }
     }
 
@@ -284,6 +292,78 @@ function highlightQuotesInMessage(messageElement) {
 
             // 截断原节点
             currentNode.nodeValue = currentNode.nodeValue.substring(0, matchInfo.index);
+        }
+    }
+}
+
+/**
+ * Highlights text within double asterisks (**) as bold.
+ * This runs after the main markdown parsing to catch patterns inside pre-generated HTML.
+ * @param {HTMLElement} messageElement - The HTML element containing the message content.
+ */
+function highlightBoldTextInMessage(messageElement) {
+    if (!messageElement) return;
+
+    const boldRegex = /\*\*([^\*]+)\*\*/g;
+    const walker = document.createTreeWalker(
+        messageElement,
+        NodeFilter.SHOW_TEXT,
+        (node) => {
+            // Filter out nodes within code blocks, preformatted text, or already highlighted elements
+            let parent = node.parentElement;
+            while (parent && parent !== messageElement) {
+                if (['PRE', 'CODE', 'STYLE', 'SCRIPT', 'STRONG', 'B'].includes(parent.tagName) ||
+                    parent.classList.contains('highlighted-tag') ||
+                    parent.classList.contains('highlighted-quote')) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                parent = parent.parentElement;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+        },
+        false
+    );
+
+    const nodesToProcess = [];
+    let node;
+    while (node = walker.nextNode()) {
+        const text = node.nodeValue;
+        boldRegex.lastIndex = 0; // Reset regex state
+        if (boldRegex.test(text)) {
+            nodesToProcess.push(node);
+        }
+    }
+
+    // Process nodes in reverse to avoid issues with node splitting and indices
+    for (let i = nodesToProcess.length - 1; i >= 0; i--) {
+        const node = nodesToProcess[i];
+        const text = node.nodeValue;
+        const fragment = document.createDocumentFragment();
+        let lastIndex = 0;
+        let match;
+
+        boldRegex.lastIndex = 0; // Reset regex state for execution
+
+        while ((match = boldRegex.exec(text)) !== null) {
+            // Add text before the match
+            if (match.index > lastIndex) {
+                fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
+            }
+            // Create and add the bold element
+            const strong = document.createElement('strong');
+            strong.textContent = match[1]; // Group 1 is the content between **
+            fragment.appendChild(strong);
+            lastIndex = match.index + match[0].length;
+        }
+
+        // Add any remaining text after the last match
+        if (lastIndex < text.length) {
+            fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+        }
+
+        // Replace the original text node with the new fragment
+        if (node.parentNode) {
+            node.parentNode.replaceChild(fragment, node);
         }
     }
 }
@@ -529,7 +609,9 @@ function showErrorNotification(message) {
 }
 
 /**
- * Applies all post-render processing to the message content.
+ * Applies synchronous post-render processing to the message content.
+ * This handles tasks like KaTeX, code highlighting, and button processing
+ * that do not depend on a fully stable DOM tree from complex innerHTML.
  * @param {HTMLElement} contentDiv The message content element.
  */
 function processRenderedContent(contentDiv) {
@@ -549,12 +631,8 @@ function processRenderedContent(contentDiv) {
     // Special block formatting (VCP/Diary)
     processAllPreBlocksInContentDiv(contentDiv);
 
-    // Process interactive buttons (NEW)
+    // Process interactive buttons
     processInteractiveButtons(contentDiv);
-
-    // Highlighting must run after KaTeX and other DOM manipulations
-    highlightTagsInMessage(contentDiv);
-    highlightQuotesInMessage(contentDiv);
 
     // Apply syntax highlighting to code blocks
     if (window.hljs) {
@@ -565,6 +643,23 @@ function processRenderedContent(contentDiv) {
             }
         });
     }
+}
+
+/**
+ * Runs all text-based highlighting that relies on TreeWalker and a stable DOM.
+ * This should be called asynchronously after the main content is rendered to avoid race conditions.
+ * @param {HTMLElement} contentDiv The message content element.
+ */
+function runTextHighlights(contentDiv) {
+    if (!contentDiv) return;
+
+    // Highlighting order is important for nested formats like **"@tag"**
+    // The original order (tags -> quotes -> bold) is better for handling nested cases.
+    // The order is important for nested formats like **"text"**.
+    // Process bolding first, then quotes, to allow quotes to be highlighted inside bolded text.
+    highlightTagsInMessage(contentDiv);
+    highlightBoldTextInMessage(contentDiv);
+    highlightQuotesInMessage(contentDiv);
 }
 
 
@@ -581,6 +676,8 @@ export {
     processRenderedContent,
     processInteractiveButtons,
     handleAIButtonClick,
+    highlightBoldTextInMessage,
+    runTextHighlights, // Export the new async highlighter
     sendButtonMessage
 
 };

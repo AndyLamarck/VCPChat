@@ -404,6 +404,13 @@ function toggleEditMode(messageItem, message) {
         contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
         contextMenuDependencies.processRenderedContent(contentDiv);
 
+        // Re-run highlights to restore quotes, bolding, etc., which was missing.
+        setTimeout(() => {
+            if (contentDiv && contentDiv.isConnected) {
+                contextMenuDependencies.runTextHighlights(contentDiv);
+            }
+        }, 0);
+
         messageItem.classList.remove('message-item-editing');
         existingTextarea.remove();
         if (existingControls) existingControls.remove();
@@ -445,6 +452,21 @@ function toggleEditMode(messageItem, message) {
         saveButton.onclick = async () => {
             // 🔧 关键修复：添加防御性编程和错误处理
             const newContent = textarea.value;
+            
+            // Get original content for comparison
+            let originalTextContent = "";
+            if (typeof message.content === 'string') {
+                originalTextContent = message.content;
+            } else if (message.content && typeof message.content.text === 'string') {
+                originalTextContent = message.content.text;
+            }
+
+            // If content hasn't changed, just exit edit mode without saving.
+            if (newContent === originalTextContent) {
+                toggleEditMode(messageItem, message);
+                return;
+            }
+
             const messageIndex = currentChatHistoryArray.findIndex(msg => msg.id === message.id);
             
             if (messageIndex === -1) {
@@ -818,19 +840,53 @@ async function handleRegenerateResponse(originalAssistantMessage) {
                 contextMenuDependencies.finalizeStreamedMessage(regenerationThinkingMessage.id, 'error', `VCP 流错误 (重新生成): ${detailedError}`);
             }
         } else {
-            // 非流式处理逻辑
-            contextMenuDependencies.removeMessageById(regenerationThinkingMessage.id, false);
-            if (vcpResult.error) {
-                contextMenuDependencies.renderMessage({ role: 'system', content: `VCP错误 (重新生成): ${vcpResult.error}`, timestamp: Date.now() });
-            } else if (vcpResult.choices && vcpResult.choices.length > 0) {
-                const assistantMessageContent = vcpResult.choices[0].message.content;
-                // renderMessage 函数会处理历史记录的更新和保存，因此此处无需再手动操作
-                contextMenuDependencies.renderMessage({ role: 'assistant', name: agentConfig.name, avatarUrl: agentConfig.avatarUrl, avatarColor: agentConfig.avatarCalculatedColor, content: assistantMessageContent, timestamp: Date.now() });
+            // 非流式处理逻辑 - 参考 chatManager.js 的健壮实现
+            const { response, context } = vcpResult; // 【修复1】正确解构返回结果
+            const isForActiveChat = context && context.agentId === currentSelectedItemVal.id && context.topicId === currentTopicIdVal;
+
+            if (isForActiveChat) {
+                contextMenuDependencies.removeMessageById(regenerationThinkingMessage.id, false); // 从UI和内存中移除"思考中"
             }
-            // 移除冗余的保存和滚动操作，因为 renderMessage 已经处理
-            // mainRefs.currentChatHistoryRef.set([...currentChatHistoryArray]);
-            // if (currentSelectedItemVal.id && currentTopicIdVal) await electronAPI.saveChatHistory(currentSelectedItemVal.id, currentTopicIdVal, currentChatHistoryArray);
-            uiHelper.scrollToBottom();
+
+            if (response.error) {
+                if (isForActiveChat) {
+                    contextMenuDependencies.renderMessage({ role: 'system', content: `VCP错误 (重新生成): ${response.error}`, timestamp: Date.now() });
+                }
+            } else if (response.choices && response.choices.length > 0) {
+                const assistantMessageContent = response.choices[0].message.content;
+                const assistantMessage = {
+                    role: 'assistant',
+                    name: agentConfig.name,
+                    avatarUrl: agentConfig.avatarUrl,
+                    avatarColor: agentConfig.avatarCalculatedColor,
+                    content: assistantMessageContent,
+                    timestamp: Date.now(),
+                    id: response.id || `regen_nonstream_${Date.now()}`
+                };
+
+                // 【修复2】采用更健壮的“读-改-写”模式
+                const historyForSave = await electronAPI.getChatHistory(context.agentId, context.topicId);
+                if (historyForSave && !historyForSave.error) {
+                    // 确保历史记录中没有残余的 "thinking" 消息
+                    const finalHistory = historyForSave.filter(msg => msg.id !== regenerationThinkingMessage.id && !msg.isThinking);
+                    finalHistory.push(assistantMessage);
+                    
+                    await electronAPI.saveChatHistory(context.agentId, context.topicId, finalHistory);
+
+                    if (isForActiveChat) {
+                        mainRefs.currentChatHistoryRef.set(finalHistory);
+                        contextMenuDependencies.renderMessage(assistantMessage);
+                    }
+                } else {
+                    console.error(`[ContextMenu] Regenerate failed to get history for saving:`, historyForSave.error);
+                     if (isForActiveChat) {
+                        contextMenuDependencies.renderMessage({ role: 'system', content: `重新生成失败：无法读取历史记录以保存。`, timestamp: Date.now() });
+                    }
+                }
+            }
+            if (isForActiveChat) {
+                uiHelper.scrollToBottom();
+            }
         }
 
     } catch (error) {

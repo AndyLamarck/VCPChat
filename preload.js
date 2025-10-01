@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     refreshModels: () => ipcRenderer.send('refresh-models'),
     onModelsUpdated: (callback) => ipcRenderer.on('models-updated', (_event, models) => callback(models)),
     getAllItems: () => ipcRenderer.invoke('get-all-items'),
+    importRegexRules: (agentId) => ipcRenderer.invoke('import-regex-rules', agentId),
 
     // Topic related
     getAgentTopics: (agentId) => ipcRenderer.invoke('get-agent-topics', agentId),
@@ -241,6 +242,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     getCurrentTheme: () => ipcRenderer.invoke('get-current-theme'),
     setTheme: (theme) => ipcRenderer.send('set-theme', theme),
+    setThemeMode: (themeMode) => ipcRenderer.send('set-theme-mode', themeMode),
 
     // Themes
     openThemesWindow: () => ipcRenderer.send('open-themes-window'),
@@ -275,8 +277,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Voice Chat
     openVoiceChatWindow: (data) => ipcRenderer.send('open-voice-chat-window', data),
     onVoiceChatData: (callback) => ipcRenderer.on('voice-chat-data', (_event, data) => callback(data)),
-    sendVoiceChatMessage: (data) => ipcRenderer.send('send-voice-chat-message', data),
-    onVoiceChatReply: (callback) => ipcRenderer.on('voice-chat-reply', (_event, data) => callback(data)),
 
     // --- Speech Recognition via Puppeteer ---
     startSpeechRecognition: () => ipcRenderer.send('start-speech-recognition'),
