@@ -1,8 +1,10 @@
 const fs = require('fs').promises;
 const path = require('path');
 const dotenv = require('dotenv');
-const Fuse = require('fuse.js');
+const { Document } = require('flexsearch');
+const jieba = require('node-jieba');
 const cheerio = require('cheerio');
+const axios = require('axios');
 
 // --- 主逻辑 ---
 async function main() {
@@ -19,11 +21,22 @@ async function main() {
         if (!maidName) {
             throw new Error("请求中缺少 'maid' 参数。");
         }
-        const keywords = (args.keyword || '').split(/[,，\s]+/).filter(Boolean);
+        let keywords = (args.keyword || '').split(/[,，\s]+/).filter(Boolean);
         if (keywords.length === 0) {
             throw new Error("请求中缺少 'keyword' 参数。");
         }
-        let windowSize = parseInt(args.window_size || '10', 10);
+        
+        // 4. 过滤屏蔽词
+        if (config.BlockedKeywords && config.BlockedKeywords.length > 0) {
+            const blockedKeywordsSet = new Set(config.BlockedKeywords);
+            keywords = keywords.filter(kw => !blockedKeywordsSet.has(kw));
+        }
+
+        if (keywords.length === 0) {
+            throw new Error("关键词均被屏蔽，无有效搜索词。");
+        }
+
+        let windowSize = parseInt(args.window_size || '5', 10);
         if (windowSize < 1) {
             windowSize = 1;
         }
@@ -37,7 +50,19 @@ async function main() {
         const userName = await findUserName(VchatDataURL);
 
         // 4. 搜索聊天记录
-        const memories = await searchHistories(VchatDataURL, agentInfo.uuid, keywords, windowSize, userName, agentInfo.name);
+        let memories = await searchHistories(VchatDataURL, agentInfo.uuid, keywords, windowSize, userName, agentInfo.name);
+
+        // 4.5. 如果启用了Rerank，则进行重排
+        if (config.RerankSearch && memories.length > 0) {
+            try {
+                console.error(`[DEBUG] Starting rerank for ${memories.length} memories...`);
+                memories = await rerankMemories(memories, keywords.join(' '), config);
+                console.error(`[DEBUG] Rerank completed. Got ${memories.length} memories back.`);
+            } catch (rerankError) {
+                console.error(JSON.stringify({ status: "error", error: `[DeepMemo] Rerank failed: ${rerankError.message}` }));
+                // Rerank失败时，我们选择继续使用原始结果而不是中断流程
+            }
+        }
 
         // 5. 格式化并输出结果
         let output = memories.join('\n\n');
@@ -101,19 +126,29 @@ function parseToolArgs(input) {
 }
 
 async function loadConfig() {
-    // 动态计算 VchatDataURL 路径，它应该是插件目录向上三层，然后进入 AppData
     const VchatDataURL = path.join(__dirname, '..', '..', '..', 'AppData');
-
     const configPath = path.join(__dirname, 'config.env');
     try {
         const configContent = await fs.readFile(configPath, 'utf-8');
         const config = dotenv.parse(configContent);
+
         if (!config.MaxMemoTokens) {
             throw new Error("config.env 文件不完整，缺少 MaxMemoTokens。");
         }
+
+        // 加载 Rerank 配置
+        const RerankSearch = config.RerankSearch ? config.RerankSearch.toLowerCase() === 'true' : false;
+
         return {
             VchatDataURL: VchatDataURL,
-            MaxMemoTokens: parseInt(config.MaxMemoTokens, 10)
+            MaxMemoTokens: parseInt(config.MaxMemoTokens, 10),
+            RerankSearch: RerankSearch,
+            RerankUrl: config.RerankUrl || '',
+            RerankApi: config.RerankApi || '',
+            RerankModel: config.RerankModel || '',
+            RerankMaxTokensPerBatch: parseInt(config.RerankMaxTokensPerBatch, 10) || 30000,
+            RerankTopN: parseInt(config.RerankTopN, 10) || 5,
+            BlockedKeywords: (config.BlockedKeywords || '').split(',').map(kw => kw.trim()).filter(Boolean)
         };
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -186,27 +221,118 @@ async function searchHistories(vchatPath, agentUuid, keywords, windowSize, userN
         for (const fileInfo of filesToSearch) {
             try {
                 const content = await fs.readFile(fileInfo.path, 'utf-8');
-                const history = JSON.parse(content).filter(entry => entry.content && typeof entry.content === 'string');
+                const rawData = JSON.parse(content);
+                let history;
+
+                // 兼容新版（直接是数组）和旧版（对象内含messages数组）的聊天记录格式
+                if (Array.isArray(rawData)) {
+                    history = rawData; // 新版格式
+                } else if (rawData && Array.isArray(rawData.messages)) {
+                    history = rawData.messages; // 兼容可能存在的旧版格式
+                } else {
+                    history = []; // 未知或无效格式，跳过
+                }
+
+                history = history.filter(entry => entry.content && typeof entry.content === 'string');
 
                 if (history.length === 0) continue;
 
-                // A. 使用 Fuse.js 进行模糊搜索
-                const fuseOptions = {
-                    keys: ['content'],
-                    includeScore: true,
-                    minMatchCharLength: 2, // 避免无意义的单字符匹配
-                    threshold: 0.3, // 收紧阈值，确保搜索结果高度相关
-                    distance: 10,   // 严格限制多关键词之间的距离
-                    ignoreLocation: true,
-                };
-                const fuse = new Fuse(history, fuseOptions);
-
-                let matchedIndices = new Set();
-                keywords.forEach(kw => {
-                    const results = fuse.search(kw);
-                    results.forEach(result => matchedIndices.add(result.refIndex));
+                // A. 使用 flexsearch 进行高性能相关性搜索
+                // 1. 创建搜索索引实例，并配置为按空格分词
+                const index = new Document({
+                    document: {
+                        id: "id",
+                        index: "content"
+                    },
+                    // 采用jieba进行中文分词
+                    tokenize: function(str) {
+                        const tokens = jieba.cut(str);
+                        // 确保返回的是字符串数组
+                        return Array.isArray(tokens) ? tokens : Array.from(tokens);
+                    }
                 });
 
+                // 2. 将所有历史记录添加到索引中
+                history.forEach((entry, i) => {
+                    const $ = cheerio.load(entry.content);
+                    const cleanContent = $.text().trim();
+                    if (cleanContent) {
+                        index.add({ id: i, content: cleanContent });
+                    }
+                });
+
+                // 3. 对每个关键词分别搜索，然后合并结果
+                console.error(`[DEBUG] Searching keywords: ${keywords.join(', ')}`);
+                let matchedIndices = new Set();
+                let rawResults = []; // 用于调试
+
+                for (const keyword of keywords) {
+                    // 对每个关键词进行搜索
+                    const results = index.search(keyword, {
+                        enrich: true,
+                        limit: 100,  // 增加结果数量限制
+                        suggest: true // 开启建议功能，处理轻微的变体
+                    });
+                    rawResults.push({keyword, results});
+                    
+                    // 正确解析 FlexSearch Document 的返回结果
+                    if (results && results.length > 0) {
+                        for (const fieldResult of results) {
+                            // fieldResult 格式: { field: "content", result: [...] }
+                            if (fieldResult.field === "content" && fieldResult.result) {
+                                fieldResult.result.forEach(id => {
+                                    matchedIndices.add(id);
+                                });
+                            }
+                        }
+                    }
+                }
+                console.error(`[DEBUG] Raw results:`, JSON.stringify(rawResults, null, 2));
+
+
+                // 如果还是没有结果，尝试另一种解析方式
+                if (matchedIndices.size === 0) {
+                    // 尝试不用 enrich 选项
+                    for (const keyword of keywords) {
+                        const simpleResults = index.search(keyword);
+                        if (simpleResults && simpleResults.length > 0) {
+                            // simpleResults for a document search without enrich is just an array of IDs.
+                            // But the documentation says it returns an array of objects {field: string, result: Array<ID>}.
+                            // Let's handle both cases.
+                            if (typeof simpleResults[0] === 'object' && simpleResults[0].field) {
+                                for (const fieldResult of simpleResults) {
+                                    if (fieldResult.result) {
+                                        fieldResult.result.forEach(id => matchedIndices.add(id));
+                                    }
+                                }
+                            } else { // Fallback for flat array of IDs
+                                simpleResults.forEach(id => {
+                                    if (typeof id === 'number') {
+                                        matchedIndices.add(id);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                // 如果 FlexSearch 仍然没有找到结果，使用简单的字符串匹配作为后备
+                if (matchedIndices.size === 0) {
+                    history.forEach((entry, i) => {
+                        const $ = cheerio.load(entry.content);
+                        const cleanContent = $.text().toLowerCase();
+                        
+                        for (const keyword of keywords) {
+                            if (cleanContent.includes(keyword.toLowerCase())) {
+                                matchedIndices.add(i);
+                                break; // 匹配到一个关键词即可
+                            }
+                        }
+                    });
+                }
+
+                console.error(`[DEBUG] Search results count: ${matchedIndices.size}`);
+                
                 const sortedIndices = Array.from(matchedIndices).sort((a, b) => a - b);
 
                 // B. 基于排序后的索引构建不重叠的回忆片段
@@ -240,6 +366,111 @@ async function searchHistories(vchatPath, agentUuid, keywords, windowSize, userN
         // 如果topics目录不存在，则返回空数组
     }
     return allMemories;
+}
+
+// --- Rerank 函数 ---
+async function rerankMemories(memories, query, config) {
+    if (!config.RerankUrl) {
+        console.error("[DEBUG] Rerank URL is not configured. Skipping rerank.");
+        return memories;
+    }
+
+    // 1. 将回忆片段分割成多个批次，确保每个批次不超过 token 上限
+    const batches = [];
+    let currentBatch = [];
+    let currentTokens = 0;
+    for (const memory of memories) {
+        // 如果当前批次非空，并且加入新片段会超限，则将当前批次存入，并开启新批次
+        if (currentBatch.length > 0 && currentTokens + memory.length > config.RerankMaxTokensPerBatch) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentTokens = 0;
+        }
+        currentBatch.push(memory);
+        currentTokens += memory.length;
+    }
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+
+    if (batches.length === 0) {
+        console.error("[DEBUG] No memories to rerank after batching.");
+        return memories;
+    }
+    
+    console.error(`[DEBUG] Split memories into ${batches.length} batches for reranking.`);
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.RerankApi}`
+    };
+    const baseUrl = config.RerankUrl.endsWith('/') ? config.RerankUrl : config.RerankUrl + '/';
+    const rerankEndpoint = baseUrl + 'v1/rerank';
+
+    try {
+        // 2. 并行发送所有批次的重排请求
+        const rerankPromises = batches.map((batch, index) => {
+            const data = {
+                model: config.RerankModel,
+                query: query,
+                documents: batch,
+                return_documents: false, // 我们只需要索引和分数
+                top_n: batch.length // 请求返回批次内所有文档的分数，以便全局排序
+            };
+            console.error(`[DEBUG] Sending batch ${index + 1}/${batches.length} with ${batch.length} memories for rerank.`);
+            return axios.post(rerankEndpoint, data, {
+                headers: headers,
+                timeout: 30000 // 增加超时时间以应对可能的并发压力
+            });
+        });
+
+        const responses = await Promise.all(rerankPromises);
+
+        // 3. 收集并整合所有批次的结果
+        let allRankedDocs = [];
+        responses.forEach((response, batchIndex) => {
+            if (response.data && Array.isArray(response.data.results)) {
+                const batch = batches[batchIndex];
+                const batchResults = response.data.results.map(result => {
+                    // API需要返回 relevance_score 用于全局排序
+                    if (typeof result.relevance_score === 'undefined') {
+                         throw new Error("Rerank API response is missing 'relevance_score'. Cannot perform global sorting.");
+                    }
+                    return {
+                        document: batch[result.index],
+                        score: result.relevance_score
+                    };
+                });
+                allRankedDocs.push(...batchResults);
+            } else {
+                 console.error(`[DEBUG] Rerank API response for batch ${batchIndex} is not in the expected format:`, response.data);
+            }
+        });
+
+        if (allRankedDocs.length === 0) {
+            console.error("[DEBUG] No valid results received from rerank API across all batches.");
+            return memories; // 如果所有批次都失败或返回空，则返回原始结果
+        }
+
+        // 4. 全局排序
+        allRankedDocs.sort((a, b) => b.score - a.score);
+
+        // 5. 提取排序后的文档内容，并截取 top_n
+        const finalMemories = allRankedDocs.map(doc => doc.document).slice(0, config.RerankTopN);
+        
+        console.error(`[DEBUG] Rerank completed. Globally sorted ${allRankedDocs.length} results, returning top ${finalMemories.length}.`);
+        
+        return finalMemories;
+
+    } catch (error) {
+        let errorMessage = error.message;
+        if (error.response) {
+            errorMessage += ` - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`;
+        }
+        console.error(`[DEBUG] Rerank API request failed during batch processing: ${errorMessage}`);
+        // 出现任何网络或API错误时，抛出异常，由上层逻辑决定是使用原始数据还是报错
+        throw new Error(`Rerank API request failed: ${errorMessage}`);
+    }
 }
 
 function formatMemory(slice, userName, agentName, memoryIndex) {
