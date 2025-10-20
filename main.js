@@ -123,6 +123,7 @@ let vcpLogReconnectInterval;
 let openChildWindows = [];
 let distributedServer = null; // To hold the distributed server instance
 let translatorWindow = null; // To hold the single instance of the translator window
+let ragObserverWindow = null; // To hold the single instance of the RAG observer window
 let networkNotesTreeCache = null; // In-memory cache for the network notes
 let cachedModels = []; // Cache for models fetched from VCP server
 const NOTES_MODULE_DIR = path.join(APP_DATA_ROOT_IN_PROJECT, 'Notemodules');
@@ -352,8 +353,23 @@ if (!gotTheLock) {
        }
    }
 
-   // Fetch models on app startup
-   await fetchAndCacheModels();
+   // Create the main window first to give immediate feedback to the user.
+   createWindow();
+   createTray();
+
+   // Fetch models in the background and notify the renderer when done.
+   console.log('[Main] Fetching models in the background...');
+   fetchAndCacheModels().then(() => {
+       if (mainWindow && !mainWindow.isDestroyed()) {
+           console.log('[Main] Background model fetch complete. Notifying renderer.');
+           mainWindow.webContents.send('models-updated', cachedModels);
+       }
+   }).catch(error => {
+       console.error('[Main] Background model fetch failed:', error);
+       if (mainWindow && !mainWindow.isDestroyed()) {
+           mainWindow.webContents.send('models-update-failed', error.message);
+       }
+   });
 
    // IPC handler to provide cached models to the renderer process
    ipcMain.handle('get-cached-models', () => {
@@ -477,8 +493,62 @@ if (!gotTheLock) {
         });
     });
 
-    createWindow();
-    createTray();
+    // 新增：处理打开RAG Observer窗口的请求
+    ipcMain.handle('open-rag-observer-window', async () => {
+        // 检查窗口是否已存在，如果存在则聚焦
+        if (ragObserverWindow && !ragObserverWindow.isDestroyed()) {
+            ragObserverWindow.focus();
+            return;
+        }
+
+        ragObserverWindow = new BrowserWindow({
+            width: 500,
+            height: 900,
+            minWidth: 300,
+            minHeight: 600,
+            title: 'VCP - 信息流监听器',
+            frame: false, // 移除原生窗口框架
+            titleBarStyle: 'hidden', // 隐藏标题栏
+            webPreferences: {
+                preload: path.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+            },
+            icon: path.join(__dirname, 'assets', 'icon.png'),
+            show: false
+        });
+
+        let settings = {};
+        try {
+            const settingsManager = require('./modules/utils/settingsManager');
+            const sm = new settingsManager(SETTINGS_FILE);
+            settings = await sm.readSettings();
+        } catch (readError) {
+            console.error('Failed to read settings file for RAG observer window:', readError);
+        }
+
+        const vcpLogUrl = settings.vcpLogUrl || '';
+        const vcpLogKey = settings.vcpLogKey || '';
+        const currentThemeMode = settings.currentThemeMode || 'dark';
+
+        // 通过URL查询参数传递配置
+        const observerUrl = `file://${path.join(__dirname, 'RAGmodules', 'RAG_Observer.html')}?vcpLogUrl=${encodeURIComponent(vcpLogUrl)}&vcpLogKey=${encodeURIComponent(vcpLogKey)}&currentThemeMode=${encodeURIComponent(currentThemeMode)}`;
+        
+        ragObserverWindow.loadURL(observerUrl);
+        ragObserverWindow.setMenu(null);
+
+        ragObserverWindow.once('ready-to-show', () => {
+            ragObserverWindow.show();
+        });
+
+        openChildWindows.push(ragObserverWindow);
+
+        ragObserverWindow.on('closed', () => {
+            openChildWindows = openChildWindows.filter(win => win !== ragObserverWindow);
+            ragObserverWindow = null;
+        });
+    });
+
     windowHandlers.initialize(mainWindow, openChildWindows);
     assistantHandlers.initialize({ SETTINGS_FILE });
     fileDialogHandlers.initialize(mainWindow, {

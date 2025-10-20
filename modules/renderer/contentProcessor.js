@@ -22,14 +22,17 @@ function ensureNewlineAfterCodeBlock(text) {
 }
 
 /**
- * Ensures that a tilde (~) is followed by a space.
+ * Ensures that a tilde (~) is followed by a space, to prevent accidental strikethrough.
+ * It avoids doing this for tildes inside URLs or file paths.
  * @param {string} text The input string.
  * @returns {string} The processed string with spaces after tildes where they were missing.
  */
 function ensureSpaceAfterTilde(text) {
     if (typeof text !== 'string') return text;
-    // Replace ~ not followed by a space with ~ followed by a space
-    return text.replace(/~(?![\s~])/g, '~ ');
+    // Replace ~ not followed by a space with ~ followed by a space,
+    // but only if the ~ is not preceded by a non-whitespace character (i.e., it's at the start of a word).
+    // This prevents modification of ~ inside URLs.
+    return text.replace(/(?<!\S)~(?![\s~])/g, '~ ');
 }
 
 /**
@@ -95,11 +98,17 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
         return;
     }
 
-    let targetContentElement = preElement.querySelector('code') || preElement;
-
-    const copyButton = targetContentElement.querySelector('.code-copy, .fa-copy');
-    if (copyButton) {
-        copyButton.remove(); // Remove existing copy button
+    // Remove the <code> element to prevent Turndown's default code block rule from matching
+    // This ensures our custom Turndown rule can handle these special blocks
+    const codeElement = preElement.querySelector('code');
+    if (codeElement) {
+        // Move any copy buttons or other elements before removing
+        const copyButton = codeElement.querySelector('.code-copy, .fa-copy');
+        if (copyButton) {
+            copyButton.remove();
+        }
+        // Remove the code wrapper, we'll set content directly on pre
+        preElement.innerHTML = '';
     }
 
     if (type === 'vcptool') {
@@ -113,7 +122,7 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
             newInnerHtml += `<span class="vcp-tool-name-highlight">UnknownTool</span>`;
         }
 
-        targetContentElement.innerHTML = newInnerHtml;
+        preElement.innerHTML = newInnerHtml;
         preElement.dataset.vcpPrettified = "true";
 
     } else if (type === 'dailynote') {
@@ -134,7 +143,7 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
             finalHtml = actualNoteContent;
         }
 
-        targetContentElement.innerHTML = finalHtml.replace(/\n/g, '<br>');
+        preElement.innerHTML = finalHtml.replace(/\n/g, '<br>');
         preElement.dataset.maidDiaryPrettified = "true";
     }
 }
@@ -383,6 +392,9 @@ function processAllPreBlocksInContentDiv(contentDiv) {
 
         const codeElement = preElement.querySelector('code');
         const blockText = codeElement ? (codeElement.textContent || "") : (preElement.textContent || "");
+        // 在美化前，将原始文本内容存储到 data-* 属性中
+        // 这是为了在后续的上下文净化过程中，能够恢复原始内容，避免特殊字符被转义
+        preElement.setAttribute('data-raw-content', blockText);
 
         // Check for VCP Tool Request
         if (blockText.includes('<<<[TOOL_REQUEST]>>>') && blockText.includes('<<<[END_TOOL_REQUEST]>>>')) {
@@ -663,6 +675,52 @@ function runTextHighlights(contentDiv) {
 }
 
 
+/**
+ * 为 CSS 字符串中的所有选择器添加作用域 ID 前缀。
+ * @param {string} cssString - 原始 CSS 文本。
+ * @param {string} scopeId - 唯一的作用域 ID (不带 #)。
+ * @returns {string} 处理后的 CSS 文本。
+ */
+function scopeCss(cssString, scopeId) {
+    // 相对健壮的正则表达式，用于捕获选择器列表，同时跳过 @规则内部的选择器
+    // 捕获组 1: 选择器列表 (e.g., .card, h1)
+    // 捕获组 2: 逗号后紧跟 { 或空格后紧跟 { (用于确定选择器列表的结束)
+    return cssString.replace(/([^\r\n,{}]+)(,(?=[^}]*{)|\s*{)/g, (match, selector, separator) => {
+        const trimmedSelector = selector.trim();
+        
+        // 跳过 @规则内部的选择器 (如 @keyframes, @media)
+        if (trimmedSelector.includes('@') || trimmedSelector === 'from' || trimmedSelector === 'to' || /^\d+%$/.test(trimmedSelector)) {
+            return match;
+        }
+        
+        // 跳过全局选择器，防止意外覆盖客户端样式
+        if (trimmedSelector === 'html' || trimmedSelector === 'body' || trimmedSelector === ':root') {
+            return match;
+        }
+
+        // 为每个选择器部分添加前缀
+        const scopedSelector = trimmedSelector
+            .split(',')
+            .map(part => {
+                const p = part.trim();
+                
+                // 检查是否是针对气泡根元素自身的伪类/伪元素 (例如 :hover, ::before)
+                // 如果选择器不包含空格，且以 : 或 :: 开头，则将其附加到 scopeId 上，而不是作为后代选择器。
+                if ((p.startsWith(':') || p.startsWith('::')) && !p.includes(' ')) {
+                    return `#${scopeId}${p}`;
+                }
+                
+                // 否则，作为后代选择器处理
+                return `#${scopeId} ${p}`;
+            })
+            .join(', ');
+        
+        // 恢复原始的分隔符 ({ 或 ,{)
+        return `${scopedSelector}${separator}`;
+    });
+}
+
+
 export {
     initializeContentProcessor,
     ensureNewlineAfterCodeBlock,
@@ -678,6 +736,6 @@ export {
     handleAIButtonClick,
     highlightBoldTextInMessage,
     runTextHighlights, // Export the new async highlighter
-    sendButtonMessage
-
+    sendButtonMessage,
+    scopeCss // Export the new CSS scoping function
 };

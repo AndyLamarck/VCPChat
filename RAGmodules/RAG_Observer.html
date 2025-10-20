@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCP可视化中心Beta</title>
+    <link rel="stylesheet" href="../styles/themes.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: var(--primary-text);
+            margin: 0;
+            padding: 10px; /* Reduce side and bottom padding */
+            display: flex;
+            justify-content: center;
+            transition: background-color 0.3s ease;
+            padding-top: 40px; /* Add padding for the custom title bar */
+            box-sizing: border-box;
+        }
+        /* --- Custom Title Bar --- */
+        #custom-title-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 10px 0 20px;
+            background-color: transparent;
+            z-index: 1000;
+            -webkit-app-region: drag;
+            user-select: none;
+        }
+
+        #custom-title-bar .title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--primary-text);
+            opacity: 0.7;
+            -webkit-app-region: no-drag;
+        }
+
+        #custom-title-bar .window-controls {
+            display: flex;
+            gap: 10px;
+            -webkit-app-region: no-drag;
+        }
+
+        .window-control-btn {
+            width: 30px;
+            height: 30px;
+            border: none;
+            background-color: transparent;
+            color: var(--secondary-text);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease;
+            padding: 0; /* Override generic button padding */
+        }
+
+        .window-control-btn:hover {
+            background-color: var(--button-hover-bg);
+            color: var(--primary-text);
+        }
+
+        #close-btn:hover {
+            background-color: #e81123;
+            color: white;
+        }
+        .container {
+            width: 95%;
+            max-width: 1200px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+            padding: 25px 35px;
+            box-sizing: border-box;
+            /* New styles for scrolling within the container */
+            max-height: calc(100vh - 60px); /* Adjust height for new padding (40px top + 10px bottom + 10px margin) */
+            overflow-y: auto;
+        }
+
+        /* --- Custom Scrollbar --- */
+        .container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .container::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+        }
+
+        .container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.25);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .container::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .container::-webkit-scrollbar-thumb:active {
+            background: rgba(255, 255, 255, 0.5);
+        }
+        h1 {
+            color: var(--highlight-text);
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 2em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            text-shadow: var(--panel-text-shadow);
+        }
+        .connection-status {
+            font-weight: 600;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            text-align: center;
+            font-size: 1.1em;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+        .status-connecting { background-color: rgba(255, 152, 0, 0.2); color: #ff9800; border: 1px solid #ff9800; }
+        .status-open { background-color: rgba(76, 175, 80, 0.2); color: #4caf50; border: 1px solid #4caf50; }
+        .status-closed { background-color: rgba(244, 67, 54, 0.2); color: #f44336; border: 1px solid #f44336; }
+        .status-error { background-color: rgba(211, 47, 47, 0.2); color: #d32f2f; border: 1px solid #d32f2f; }
+
+        .controls {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+
+        button {
+            background-color: var(--button-bg);
+            color: var(--text-on-accent);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        button:hover {
+            background-color: var(--button-hover-bg);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            transform: translateY(-2px);
+        }
+
+        #infoContainer {
+            border-top: 1px solid #e0e0e0;
+            padding-top: 20px;
+        }
+
+        .rag-block {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px) saturate(120%);
+            -webkit-backdrop-filter: blur(12px) saturate(120%);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            padding: 15px 20px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        .rag-block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+        }
+        .rag-block-header {
+            border-bottom: 1px dashed var(--border-color);
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .rag-block-header h3 { margin: 0 0 8px 0; color: var(--highlight-text); }
+        .rag-block-header p { margin: 2px 0; font-size: 0.9em; color: var(--secondary-text); }
+        .rag-block-header strong { color: var(--primary-text); }
+
+        .rag-item {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 12px 0;
+        }
+        .rag-item:last-child { border-bottom: none; }
+
+        .rag-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+        .rag-meta span {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: var(--secondary-text);
+            padding: 3px 8px;
+            border-radius: 12px;
+            margin-right: 8px;
+            font-weight: 500;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .rag-meta .source-rag { background-color: rgba(52, 152, 219, 0.2); color: #5dade2; border-color: #5dade2; }
+        .rag-meta .source-time { background-color: rgba(46, 204, 113, 0.2); color: #58d68d; border-color: #58d68d; }
+        .rag-meta .date { background-color: rgba(142, 68, 173, 0.2); color: #af7ac5; border-color: #af7ac5; }
+
+        /* 元思考链专用样式 */
+        .meta-thinking-block {
+            background: linear-gradient(135deg, rgba(142, 68, 173, 0.1) 0%, rgba(52, 152, 219, 0.1) 100%);
+            border: 2px solid rgba(142, 68, 173, 0.3);
+            border-radius: 16px;
+            margin-bottom: 25px;
+            padding: 20px;
+            box-shadow: 0 6px 24px rgba(142, 68, 173, 0.2);
+        }
+        
+        .meta-thinking-header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px dashed rgba(142, 68, 173, 0.3);
+        }
+        
+        .meta-thinking-header h3 {
+            margin: 0 0 10px 0;
+            color: #af7ac5;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .chain-path {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 15px 0;
+            font-size: 0.9em;
+        }
+        
+        .chain-node {
+            background: rgba(142, 68, 173, 0.2);
+            color: #af7ac5;
+            padding: 5px 12px;
+            border-radius: 20px;
+            border: 1px solid #af7ac5;
+            font-weight: 500;
+        }
+        
+        .chain-arrow {
+            color: #af7ac5;
+            font-size: 1.2em;
+        }
+        
+        .semantic-groups {
+            background: rgba(52, 152, 219, 0.1);
+            border: 1px solid rgba(52, 152, 219, 0.3);
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin: 10px 0;
+        }
+        
+        .semantic-groups strong {
+            color: #5dade2;
+        }
+        
+        .semantic-group-tag {
+            background: rgba(52, 152, 219, 0.2);
+            color: #5dade2;
+            padding: 3px 10px;
+            border-radius: 12px;
+            margin: 0 5px;
+            font-size: 0.85em;
+            border: 1px solid #5dade2;
+        }
+        
+        .thinking-stage {
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 4px solid #af7ac5;
+            border-radius: 8px;
+            margin: 15px 0;
+            padding: 15px;
+            transition: all 0.3s ease;
+        }
+        
+        .thinking-stage:hover {
+            background: rgba(255, 255, 255, 0.06);
+            transform: translateX(5px);
+        }
+        
+        .stage-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .stage-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #af7ac5;
+        }
+        
+        .stage-badge {
+            background: rgba(142, 68, 173, 0.2);
+            color: #af7ac5;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            border: 1px solid #af7ac5;
+        }
+        
+        .stage-results {
+            margin-top: 10px;
+        }
+        
+        .stage-result-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            padding: 10px;
+            margin: 8px 0;
+            font-size: 0.9em;
+        }
+        
+        .stage-result-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 0.85em;
+            color: var(--secondary-text);
+        }
+
+        .toggle-button {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--secondary-text);
+            padding: 4px 10px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.3s ease;
+        }
+        .toggle-button:hover { 
+            background-color: var(--accent-bg);
+            color: var(--primary-text);
+            transform: scale(1.05);
+        }
+
+        .rag-content {
+            font-size: 0.95em;
+            line-height: 1.6;
+            color: var(--primary-text);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .agent-chat-query .rag-content p,
+        .agent-chat-response .rag-content p {
+            margin-top: 0;
+            margin-bottom: 1em;
+        }
+        .agent-chat-query .rag-content p:last-child,
+        .agent-chat-response .rag-content p:last-child {
+            margin-bottom: 0;
+        }
+        .rag-content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        .full-text { display: none; }
+        
+        /* Agent Private Chat Preview Styles */
+        .agent-chat-block {
+            background: rgba(255, 193, 7, 0.05);
+            backdrop-filter: blur(12px) saturate(120%);
+            -webkit-backdrop-filter: blur(12px) saturate(120%);
+            border: 1px solid rgba(255, 193, 7, 0.3);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            padding: 15px 20px;
+            box-shadow: 0 4px 16px rgba(255, 193, 7, 0.1);
+            transition: all 0.3s ease;
+        }
+        .agent-chat-block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 193, 7, 0.2);
+        }
+        .agent-chat-header h3 { margin: 0 0 8px 0; color: #ffc107; }
+        .agent-chat-header p { margin: 2px 0; font-size: 0.9em; color: var(--secondary-text); }
+        .agent-chat-header strong { color: var(--primary-text); }
+        .agent-chat-content {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px dashed rgba(255, 193, 7, 0.2);
+        }
+        .agent-chat-query strong, .agent-chat-response strong {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 1em;
+            color: var(--highlight-text);
+        }
+        .agent-chat-query .rag-content, .agent-chat-response .rag-content {
+            padding-left: 15px;
+            border-left: 3px solid rgba(255, 193, 7, 0.5);
+        }
+        
+        #spectrum-canvas {
+            display: none;
+            width: 100%;
+            height: 60px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+        }
+        
+        #infoContainer p {
+            color: var(--secondary-text);
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        // Configure marked.js to allow raw HTML and handle line breaks
+        marked.setOptions({
+            gfm: true, // Enable GitHub Flavored Markdown
+            breaks: true, // Interpret carriage returns as <br>
+        });
+    </script>
+    <script src="./rag-observer-config.js"></script>
+</head>
+<body>
+    <!-- Custom Title Bar -->
+    <div id="custom-title-bar">
+        <span class="title">VCP - 信息流监听器</span>
+        <div class="window-controls">
+            <button id="minimize-btn" class="window-control-btn" title="最小化">
+                <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"></line></svg>
+            </button>
+            <button id="maximize-btn" class="window-control-btn" title="最大化">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path fill="none" stroke="currentColor" stroke-width="1" d="M0.5,0.5 h9 v9 h-9 z"></path></svg>
+            </button>
+            <button id="close-btn" class="window-control-btn" title="关闭">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M0.5,0.5 9.5,9.5 M9.5,0.5 0.5,9.5" stroke="currentColor" stroke-width="1.2"></path></svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <canvas id="spectrum-canvas"></canvas>
+        <h1>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle;">
+                <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="#3498db"/>
+                <path d="M12 7C9.24 7 7 9.24 7 12C7 14.76 9.24 17 12 17C14.76 17 17 14.76 17 12C17 9.24 14.76 7 12 7ZM12 15C10.34 15 9 13.66 9 12C9 10.34 10.34 9 12 9C13.66 9 15 10.34 15 12C15 13.66 13.66 15 12 15Z" fill="#3498db"/>
+                <path d="M12 4V2M12 22V20M4 12H2M22 12H20M19.07 4.93L17.66 6.34M4.93 19.07L6.34 17.66M19.07 19.07L17.66 17.66M4.93 4.93L6.34 6.34" stroke="#3498db" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            VCP 信息流监听器
+        </h1>
+        
+        <div id="connectionStatus" class="connection-status status-closed">
+            连接状态：未连接
+        </div>
+
+        <div class="controls">
+            <button onclick="clearLogs()">清空日志</button>
+        </div>
+
+        <div id="infoContainer">
+            <p style="text-align:center; color:#999;">等待连接...</p>
+        </div>
+    </div>
+
+    <script>
+        const spectrumCanvas = document.getElementById('spectrum-canvas');
+        if (spectrumCanvas) {
+            const spectrumCtx = spectrumCanvas.getContext('2d');
+            let animationFrameId;
+
+            window.stopSpectrumAnimation = function() {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                spectrumCanvas.style.display = 'none';
+            }
+
+            function drawSpectrum() {
+                if (spectrumCanvas.width !== spectrumCanvas.offsetWidth || spectrumCanvas.height !== spectrumCanvas.offsetHeight) {
+                    spectrumCanvas.width = spectrumCanvas.offsetWidth;
+                    spectrumCanvas.height = spectrumCanvas.offsetHeight;
+                }
+                
+                const width = spectrumCanvas.width;
+                const height = spectrumCanvas.height;
+                spectrumCtx.clearRect(0, 0, width, height);
+
+                const bars = 64;
+                const barWidth = width / bars;
+                const time = Date.now() * 0.002;
+
+                for (let i = 0; i < bars; i++) {
+                    const x = i * barWidth;
+                    const amplitude = (Math.sin(i * 0.2 + time) + 1) / 2;
+                    const barHeight = amplitude * height * 0.8 + height * 0.1;
+                    
+                    const gradient = spectrumCtx.createLinearGradient(0, 0, 0, height);
+                    gradient.addColorStop(0, 'rgba(52, 152, 219, 0.8)');
+                    gradient.addColorStop(1, 'rgba(142, 68, 173, 0.8)');
+
+                    spectrumCtx.fillStyle = gradient;
+                    spectrumCtx.fillRect(x, height - barHeight, barWidth - 2, barHeight);
+                }
+
+                animationFrameId = requestAnimationFrame(drawSpectrum);
+            }
+
+            window.startSpectrumAnimation = function(duration = 3000) {
+                spectrumCanvas.style.display = 'block';
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                }
+                drawSpectrum();
+                setTimeout(window.stopSpectrumAnimation, duration);
+            }
+        }
+    </script>
+    <script>
+        const connectionStatusDiv = document.getElementById('connectionStatus');
+        const infoContainer = document.getElementById('infoContainer');
+
+        function updateStatus(status, message) {
+            connectionStatusDiv.className = `connection-status status-${status}`;
+            connectionStatusDiv.textContent = `连接状态：${message}`;
+        }
+
+        function displayRagInfo(data) {
+            if (infoContainer.firstElementChild && infoContainer.firstElementChild.tagName === 'P') {
+                infoContainer.innerHTML = '';
+            }
+
+            // 检查是否为 Agent 私聊预览数据
+            if (data.type === 'AGENT_PRIVATE_CHAT_PREVIEW') {
+                displayAgentChatPreview(data);
+                return;
+            }
+
+            // 检查是否为元思考链数据
+            if (data.type === 'META_THINKING_CHAIN') {
+                displayMetaThinkingChain(data);
+                return;
+            }
+
+            const block = document.createElement('div');
+            block.className = 'rag-block';
+
+            const header = document.createElement('div');
+            header.className = 'rag-block-header';
+            const queryText = data.query;
+            const needsToggle = queryText.length > 150;
+            const renderedQuery = marked.parse(queryText);
+            const queryDisplay = needsToggle
+                ? `<span class="snippet">${queryText.substring(0, 150)}...</span><div class="full-text" style="display:none;">${renderedQuery}</div>`
+                : `<div>${renderedQuery}</div>`;
+            const toggleButtonHTML = needsToggle
+                ? `<button class="toggle-button" style="margin-left: 10px;" onclick="toggleQueryText(this)">展开</button>`
+                : '';
+
+            header.innerHTML = `
+                <h3>知识库: <strong>${data.dbName}</strong></h3>
+                <p>查询: <em class="query-content">${queryDisplay}</em> ${toggleButtonHTML}</p>
+                <p>
+                    <strong>K:</strong> ${data.k} |
+                    <strong>Time:</strong> ${data.useTime} |
+                    <strong>Group:</strong> ${data.useGroup} |
+                    <strong>Rerank:</strong> ${data.useRerank} |
+                    <strong>召回数量:</strong> ${data.results.length}
+                </p>
+            `;
+            block.appendChild(header);
+
+            data.results.forEach(r => {
+                const item = document.createElement('div');
+                item.className = 'rag-item';
+
+                const itemHeader = document.createElement('div');
+                itemHeader.className = 'rag-item-header';
+                
+                const meta = document.createElement('div');
+                meta.className = 'rag-meta';
+                meta.innerHTML = `
+                    <span class="source-${r.source || 'unknown'}">来源: ${r.source || 'N/A'}</span>
+                    ${r.date ? `<span class="date">日期: ${r.date}</span>` : ''}
+                    ${r.score ? `<span>Score: ${r.score.toFixed(3)}</span>` : ''}
+                `;
+
+                const toggleBtn = document.createElement('button');
+                toggleBtn.className = 'toggle-button';
+                toggleBtn.textContent = '展开';
+                toggleBtn.onclick = () => toggleFullText(toggleBtn);
+
+                itemHeader.appendChild(meta);
+                itemHeader.appendChild(toggleBtn);
+
+                const content = document.createElement('div');
+                content.className = 'rag-content';
+                
+                const snippet = document.createElement('div');
+                snippet.className = 'snippet';
+                snippet.textContent = r.text.substring(0, 150) + (r.text.length > 150 ? '...' : '');
+
+                const fullText = document.createElement('div');
+                fullText.className = 'full-text';
+                fullText.innerHTML = marked.parse(r.text);
+
+                content.appendChild(snippet);
+                content.appendChild(fullText);
+                
+                item.appendChild(itemHeader);
+                item.appendChild(content);
+                block.appendChild(item);
+            });
+
+            infoContainer.prepend(block);
+        }
+
+        function toggleQueryText(button) {
+            const queryContent = button.parentElement.querySelector('.query-content');
+            const snippet = queryContent.querySelector('.snippet');
+            const fullText = queryContent.querySelector('.full-text');
+            
+            if (!snippet || !fullText) return;
+
+            const isCollapsed = fullText.style.display === 'none';
+            if (isCollapsed) {
+                fullText.style.display = 'block';
+                snippet.style.display = 'none';
+                button.textContent = '收起';
+            } else {
+                fullText.style.display = 'none';
+                snippet.style.display = 'block';
+                button.textContent = '展开';
+            }
+        }
+
+        function toggleFullText(button) {
+            const contentDiv = button.closest('.rag-item').querySelector('.rag-content');
+            const snippet = contentDiv.querySelector('.snippet');
+            const fullText = contentDiv.querySelector('.full-text');
+
+            const isCollapsed = fullText.style.display === 'none';
+            if (isCollapsed) {
+                fullText.style.display = 'block';
+                snippet.style.display = 'none';
+                button.textContent = '收起';
+
+            } else {
+                fullText.style.display = 'none';
+                snippet.style.display = 'block';
+                button.textContent = '展开';
+            }
+        }
+
+        function displayMetaThinkingChain(data) {
+            const block = document.createElement('div');
+            block.className = 'meta-thinking-block';
+
+            // 头部
+            const header = document.createElement('div');
+            header.className = 'meta-thinking-header';
+            
+            const title = document.createElement('h3');
+            title.innerHTML = `
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="#af7ac5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="rgba(142, 68, 173, 0.2)"/>
+                    <path d="M2 17L12 22L22 17" stroke="#af7ac5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="#af7ac5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                VCP元思考链: ${data.chainName}
+            `;
+            header.appendChild(title);
+
+            // 查询信息
+            const queryInfo = document.createElement('p');
+            queryInfo.style.fontSize = '0.9em';
+            queryInfo.style.color = 'var(--secondary-text)';
+            const queryText = data.query || '';
+            const needsToggle = queryText.length > 100;
+            const renderedQuery = marked.parse(queryText || '');
+            const queryDisplay = needsToggle
+                ? `<span class="snippet">${(queryText || '').substring(0, 100)}...</span><div class="full-text" style="display:none;">${renderedQuery}</div>`
+                : `<div>${renderedQuery}</div>`;
+            const toggleButtonHTML = needsToggle
+                ? `<button class="toggle-button" style="margin-left: 8px;" onclick="toggleQueryText(this)">展开</button>`
+                : '';
+            queryInfo.innerHTML = `查询: <em class="query-content">${queryDisplay}</em> ${toggleButtonHTML}`;
+            header.appendChild(queryInfo);
+
+            // 思维链路径
+            const chainPath = document.createElement('div');
+            chainPath.className = 'chain-path';
+            if (data.stages && data.stages.length > 0) {
+                data.stages.forEach((stage, index) => {
+                    if (index > 0) {
+                        const arrow = document.createElement('span');
+                        arrow.className = 'chain-arrow';
+                        arrow.textContent = '→';
+                        chainPath.appendChild(arrow);
+                    }
+                    const node = document.createElement('span');
+                    node.className = 'chain-node';
+                    node.textContent = stage.clusterName;
+                    chainPath.appendChild(node);
+                });
+            }
+            header.appendChild(chainPath);
+
+            // 语义组信息
+            if (data.useGroup && data.activatedGroups && data.activatedGroups.length > 0) {
+                const groupsDiv = document.createElement('div');
+                groupsDiv.className = 'semantic-groups';
+                let groupsHTML = '<strong>激活的语义组:</strong> ';
+                data.activatedGroups.forEach(group => {
+                    groupsHTML += `<span class="semantic-group-tag">${group}</span>`;
+                });
+                groupsDiv.innerHTML = groupsHTML;
+                header.appendChild(groupsDiv);
+            }
+
+            // 统计信息
+            const statsDiv = document.createElement('p');
+            statsDiv.style.fontSize = '0.85em';
+            statsDiv.style.marginTop = '10px';
+            statsDiv.innerHTML = `
+                <strong>总阶段数:</strong> ${data.totalStages} |
+                <strong>使用语义组:</strong> ${data.useGroup ? '是' : '否'}
+            `;
+            header.appendChild(statsDiv);
+
+            block.appendChild(header);
+
+            // 各阶段详情
+            if (data.stages && data.stages.length > 0) {
+                data.stages.forEach(stage => {
+                    const stageDiv = document.createElement('div');
+                    stageDiv.className = 'thinking-stage';
+
+                    const stageHeader = document.createElement('div');
+                    stageHeader.className = 'stage-header';
+
+                    const stageTitle = document.createElement('div');
+                    stageTitle.className = 'stage-title';
+                    stageTitle.textContent = `阶段${stage.stage}: ${stage.clusterName}`;
+
+                    const stageBadge = document.createElement('div');
+                    stageBadge.className = 'stage-badge';
+                    stageBadge.textContent = `召回 ${stage.resultCount} 个`;
+
+                    stageHeader.appendChild(stageTitle);
+                    stageHeader.appendChild(stageBadge);
+                    stageDiv.appendChild(stageHeader);
+
+                    // 阶段结果
+                    if (stage.results && stage.results.length > 0) {
+                        const resultsDiv = document.createElement('div');
+                        resultsDiv.className = 'stage-results';
+
+                        stage.results.forEach((result, idx) => {
+                            const resultItem = document.createElement('div');
+                            resultItem.className = 'stage-result-item';
+
+                            const resultMeta = document.createElement('div');
+                            resultMeta.className = 'stage-result-meta';
+                            resultMeta.innerHTML = `
+                                <span>#${idx + 1}</span>
+                                ${result.score ? `<span>Score: ${result.score.toFixed(3)}</span>` : ''}
+                            `;
+
+                            const resultText = document.createElement('div');
+                            resultText.style.marginTop = '6px';
+                            resultText.style.fontSize = '0.9em';
+                            resultText.style.lineHeight = '1.5';
+                            
+                            const needsToggleResult = result.text && result.text.length > 120;
+                            const renderedText = marked.parse(result.text || '');
+                            if (needsToggleResult) {
+                                const snippetText = (result.text || '').substring(0, 120) + '...';
+                                resultText.innerHTML = `
+                                    <div class="snippet">${snippetText}</div>
+                                    <div class="full-text" style="display:none;">${renderedText}</div>
+                                    <button class="toggle-button" style="margin-top: 6px;" onclick="toggleResultText(this)">展开</button>
+                                `;
+                            } else {
+                                resultText.innerHTML = renderedText;
+                            }
+
+                            resultItem.appendChild(resultMeta);
+                            resultItem.appendChild(resultText);
+                            resultsDiv.appendChild(resultItem);
+                        });
+
+                        stageDiv.appendChild(resultsDiv);
+                    } else {
+                        const noResults = document.createElement('p');
+                        noResults.style.fontSize = '0.9em';
+                        noResults.style.color = 'var(--secondary-text)';
+                        noResults.style.fontStyle = 'italic';
+                        noResults.textContent = '本阶段未找到匹配的元逻辑模块';
+                        stageDiv.appendChild(noResults);
+                    }
+
+                    block.appendChild(stageDiv);
+                });
+            }
+
+            infoContainer.prepend(block);
+        }
+
+        function toggleResultText(button) {
+            const parent = button.parentElement;
+            const snippet = parent.querySelector('.snippet');
+            const fullText = parent.querySelector('.full-text');
+            
+            if (!snippet || !fullText) return;
+
+            const isCollapsed = fullText.style.display === 'none';
+            if (isCollapsed) {
+                fullText.style.display = 'block';
+                snippet.style.display = 'none';
+                button.textContent = '收起';
+            } else {
+                fullText.style.display = 'none';
+                snippet.style.display = 'block';
+                button.textContent = '展开';
+            }
+        }
+
+        function toggleAgentChatText(button) {
+            const contentDiv = button.parentElement;
+            const snippet = contentDiv.querySelector('.snippet');
+            const fullText = contentDiv.querySelector('.full-text');
+            
+            if (!snippet || !fullText) return;
+
+            const isCollapsed = fullText.style.display === 'none';
+            if (isCollapsed) {
+                fullText.style.display = 'block';
+                snippet.style.display = 'none';
+                button.textContent = '收起';
+            } else {
+                fullText.style.display = 'none';
+                snippet.style.display = 'block';
+                button.textContent = '展开';
+            }
+        }
+
+        function displayAgentChatPreview(data) {
+            const block = document.createElement('div');
+            block.className = 'agent-chat-block';
+
+            const header = document.createElement('div');
+            header.className = 'agent-chat-header';
+            
+            const time = new Date(data.timestamp).toLocaleTimeString();
+
+            header.innerHTML = `
+                <h3>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle;">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="#ffc107"/>
+                        <path d="M12 7C9.24 7 7 9.24 7 12C7 14.76 9.24 17 12 17C14.76 17 17 14.76 17 12C17 9.24 14.76 7 12 7Z" fill="#ffc107"/>
+                    </svg>
+                    Agent 私聊预览: <strong>${data.agentName}</strong> (${time})
+                </h3>
+                <p>会话ID: ${data.sessionId}</p>
+            `;
+            block.appendChild(header);
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'agent-chat-content';
+
+            // User Query
+            const queryText = data.query || '';
+            const needsToggleQuery = queryText.length > 150;
+            const renderedQuery = marked.parse(queryText);
+            const queryDisplay = needsToggleQuery
+                ? `<span class="snippet">${queryText.substring(0, 150)}...</span><div class="full-text" style="display:none;">${renderedQuery}</div>`
+                : `<div>${renderedQuery}</div>`;
+            const toggleButtonQueryHTML = needsToggleQuery
+                ? `<button class="toggle-button" style="margin-left: 10px;" onclick="toggleAgentChatText(this)">展开</button>`
+                : '';
+            
+            const queryDiv = document.createElement('div');
+            queryDiv.className = 'agent-chat-query';
+            queryDiv.innerHTML = `
+                <strong>用户输入:</strong>
+                <div class="rag-content">
+                    ${queryDisplay} ${toggleButtonQueryHTML}
+                </div>
+            `;
+            contentDiv.appendChild(queryDiv);
+
+            // Agent Response
+            const responseText = data.response || '';
+            const needsToggleResponse = responseText.length > 150;
+            const renderedResponse = marked.parse(responseText);
+            const responseDisplay = needsToggleResponse
+                ? `<span class="snippet">${responseText.substring(0, 150)}...</span><div class="full-text" style="display:none;">${renderedResponse}</div>`
+                : `<div>${renderedResponse}</div>`;
+            const toggleButtonResponseHTML = needsToggleResponse
+                ? `<button class="toggle-button" style="margin-left: 10px;" onclick="toggleAgentChatText(this)">展开</button>`
+                : '';
+
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'agent-chat-response';
+            responseDiv.innerHTML = `
+                <strong>Agent 回复:</strong>
+                <div class="rag-content">
+                    ${responseDisplay} ${toggleButtonResponseHTML}
+                </div>
+            `;
+            contentDiv.appendChild(responseDiv);
+
+            block.appendChild(contentDiv);
+            infoContainer.prepend(block);
+        }
+
+        function clearLogs() {
+            infoContainer.innerHTML = '<p style="text-align:center; color:#999;">日志已清空。</p>';
+        }
+    </script>
+</body>
+</html>

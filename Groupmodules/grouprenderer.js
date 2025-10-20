@@ -117,6 +117,28 @@ window.GroupRenderer = (() => {
                         <option value="invite_only">邀请发言</option>
                     </select>
                 </div>
+
+               <hr class="form-divider">
+               <div class="form-group-inline" style="justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                   <label for="groupUseUnifiedModel">启用群组统一模型</label>
+                   <label class="switch">
+                       <input type="checkbox" id="groupUseUnifiedModel">
+                       <span class="slider round"></span>
+                   </label>
+               </div>
+               <div id="groupUnifiedModelContainer" class="form-group" style="display: none;">
+                   <label for="groupUnifiedModelInput">群组统一模型:</label>
+                   <div class="model-input-container">
+                       <input type="text" id="groupUnifiedModelInput" placeholder="例如 gemini-pro">
+                       <button type="button" id="openGroupModelSelectBtn" class="small-button" title="选择模型">
+                           <svg data-slot="icon" fill="none" stroke-width="1.5" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="16" height="16">
+                               <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9"></path>
+                           </svg>
+                       </button>
+                   </div>
+               </div>
+               <hr class="form-divider">
+
                 <div id="memberTagsContainer" class="form-group" style="display: none;">
                     <label>成员 Tags (用于自然随机模式):</label>
                     <div id="memberTagsInputs"></div>
@@ -154,6 +176,12 @@ window.GroupRenderer = (() => {
         groupAvatarPreview = document.getElementById('groupAvatarPreview');
         groupMembersListDiv = document.getElementById('groupMembersList');
         groupChatModeSelect = document.getElementById('groupChatMode');
+       // 新增：获取统一模型UI元素的引用
+       groupUseUnifiedModel = document.getElementById('groupUseUnifiedModel');
+       groupUnifiedModelContainer = document.getElementById('groupUnifiedModelContainer');
+       groupUnifiedModelInput = document.getElementById('groupUnifiedModelInput');
+       openGroupModelSelectBtn = document.getElementById('openGroupModelSelectBtn');
+
         memberTagsContainer = document.getElementById('memberTagsContainer');
         memberTagsInputsDiv = document.getElementById('memberTagsInputs');
         groupPromptTextarea = document.getElementById('groupPrompt');
@@ -379,6 +407,37 @@ window.GroupRenderer = (() => {
         await populateGroupMembersSettings(groupConfig);
         toggleMemberTagsVisibility(groupConfig.mode);
 
+       // 新增：处理统一模型UI
+       groupUseUnifiedModel.checked = groupConfig.useUnifiedModel === true;
+       groupUnifiedModelInput.value = groupConfig.unifiedModel || '';
+       groupUnifiedModelContainer.style.display = groupUseUnifiedModel.checked ? 'block' : 'none';
+
+       groupUseUnifiedModel.onchange = () => {
+           groupUnifiedModelContainer.style.display = groupUseUnifiedModel.checked ? 'block' : 'none';
+       };
+       
+       // To prevent adding multiple listeners, we replace the button with a clone of itself, which removes all old listeners.
+       const newBtn = openGroupModelSelectBtn.cloneNode(true);
+       openGroupModelSelectBtn.parentNode.replaceChild(newBtn, openGroupModelSelectBtn);
+       openGroupModelSelectBtn = newBtn; // Update our reference to the new button
+
+       openGroupModelSelectBtn.addEventListener('click', async () => {
+           try {
+               console.log('[GroupRenderer] Fetching cached models from main process...');
+               const models = await electronAPI.getCachedModels();
+               console.log(`[GroupRenderer] Received ${models.length} cached models.`);
+               // We assume the generic modal can accept a 'models' array in its options to prevent re-fetching.
+               uiHelper.openModal('modelSelectModal', (selectedModel) => {
+                   if (selectedModel && groupUnifiedModelInput) {
+                       groupUnifiedModelInput.value = selectedModel;
+                   }
+               }, { models: models });
+           } catch (error) {
+               console.error('Error fetching cached models for group settings:', error);
+               uiHelper.showToastNotification('加载模型列表失败', 'error');
+           }
+       });
+
         groupChatModeSelect.onchange = () => {
             toggleMemberTagsVisibility(groupChatModeSelect.value);
         };
@@ -402,6 +461,7 @@ window.GroupRenderer = (() => {
         groupAvatarInput.addEventListener('change', handleGroupAvatarChange);
         groupAvatarInput._eventListenerAttached = true;
     }
+
 
     function handleGroupAvatarChange(event) {
         const file = event.target.files[0];
@@ -522,6 +582,9 @@ window.GroupRenderer = (() => {
             name: groupNameInput.value.trim(),
             members: selectedMemberIds,
             mode: groupChatModeSelect.value,
+           // 新增：读取统一模型设置
+           useUnifiedModel: groupUseUnifiedModel.checked,
+           unifiedModel: groupUnifiedModelInput.value.trim(),
             memberTags: memberTags,
             groupPrompt: groupPromptTextarea.value.trim(),
             invitePrompt: invitePromptTextarea.value.trim()

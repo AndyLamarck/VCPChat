@@ -45,6 +45,7 @@
     "hnswlib-node": "^3.0.0",
     "html2canvas": "^1.4.1",
     "iconv-lite": "^0.6.3",
+    "jsdom": "^27.0.1",
     "mammoth": "^1.9.1",
     "marked": "^12.0.0",
     "minimatch": "^9.0.0",
@@ -63,6 +64,7 @@
     "sharp": "^0.34.2",
     "three": "^0.178.0",
     "trash": "^9.0.0",
+    "turndown": "^7.2.1",
     "ws": "^8.17.0"
   },
   "build": {
