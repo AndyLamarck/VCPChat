@@ -258,9 +258,6 @@ class ModernConfirmDialog:
     
     def on_cancel(self):
         self.result = False
-        # 打印到stderr，以便Node.js可以捕获这个特定的消息
-        print("User cancelled the operation.", file=sys.stderr)
-        sys.stderr.flush()
         self.root.quit()
     
     def show(self):
@@ -269,66 +266,36 @@ class ModernConfirmDialog:
         return self.result
 
 def main():
-    # This script is launched with admin rights by Node.js.
-    # It receives two arguments: the base64 encoded command and a path to an output file.
-    # It writes the result of the operation into the output file.
+    if not is_admin():
+        try:
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, 
+                                               " ".join(sys.argv), None, 1)
+        except Exception as e:
+            pass
+        sys.exit(0)
 
-    if len(sys.argv) < 3:
-        # We need the command and the output file path.
-        # We can't print to stderr as it won't be captured across the UAC boundary.
-        # The parent process will rely on a timeout to detect this kind of failure.
+    if len(sys.argv) < 2:
         sys.exit(1)
 
-    output_file_path = None
     try:
         base64_command = sys.argv[1]
-        output_file_path = sys.argv[2]
         decoded_command = base64.b64decode(base64_command).decode('utf-8')
-    except Exception:
-        if output_file_path:
-            with open(output_file_path, 'w', encoding='utf-8') as f:
-                f.write("ERROR: Invalid arguments received by the admin script.")
+    except Exception as e:
         sys.exit(1)
 
-    # Display the confirmation dialog.
+    # 显示现代化确认对话框
     dialog = ModernConfirmDialog(decoded_command)
     user_confirmed = dialog.show()
-
-    if not user_confirmed:
-        with open(output_file_path, 'w', encoding='utf-8') as f:
-            f.write("USER_CANCELLED")
-        sys.exit(1)
     
-    # If the user confirmed, execute the command and redirect all output to the file.
-    try:
-        # We use subprocess.run to wait for the command to complete.
-        # We redirect stdout and stderr to the same file.
-        # The command is executed in a hidden window.
-        full_command = f'{decoded_command} *>&1'
-        
-        result = subprocess.run(
-            ['powershell.exe', '-Command', full_command],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        
-        # Write the captured output to the designated file.
-        # result.stdout will contain both stdout and stderr from the PowerShell command.
-        with open(output_file_path, 'w', encoding='utf-8') as f:
-            f.write(result.stdout or "")
-            if result.stderr:
-                f.write(f"\n--- SCRIPT EXECUTION ERROR ---\n{result.stderr}")
-
-    except Exception as e:
-        # If launching the process fails, write the error to the file.
-        with open(output_file_path, 'w', encoding='utf-8') as f:
-            f.write(f"ERROR: Failed to execute the PowerShell command. {e}")
-        sys.exit(1)
-    
-    # Exit with code 0 to signal success.
-    sys.exit(0)
+    if user_confirmed:
+        try:
+            subprocess.Popen(
+                ['powershell.exe', '-NoExit', '-Command', decoded_command],
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+        except Exception as e:
+            # 如果执行失败，可以考虑显示错误对话框
+            pass
 
 if __name__ == "__main__":
     main()
