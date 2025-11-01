@@ -11,6 +11,42 @@ document.addEventListener('DOMContentLoaded', () => {
     const keyboardIcon = document.getElementById('keyboard-icon');
     const micIcon = document.getElementById('mic-icon');
 
+    // Initialize audio context on first user gesture
+    function initAudioContext() {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            console.log('[VoiceChat] Audio context initialized');
+        }
+        if (audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
+    }
+
+    // Detect user gestures to enable audio playback
+    function detectUserGesture() {
+        if (!userGestureDetected) {
+            userGestureDetected = true;
+            initAudioContext();
+            console.log('[VoiceChat] User gesture detected, audio playback enabled');
+
+            // Remove any existing hints or errors
+            document.querySelectorAll('.audio-playback-hint, .audio-playback-error').forEach(el => el.remove());
+
+            // Try to restart audio queue if there are pending items
+            if (audioQueue.length > 0 && !isPlaying) {
+                console.log('[VoiceChat] Restarting audio queue after user gesture');
+                setTimeout(() => processAudioQueue(), 100);
+            }
+        }
+    }
+
+    // Add gesture listeners to enable audio
+    document.addEventListener('click', detectUserGesture, { once: true });
+    document.addEventListener('keydown', detectUserGesture, { once: true });
+    chatMessagesDiv.addEventListener('click', detectUserGesture, { once: true });
+    sendMessageBtn.addEventListener('click', detectUserGesture, { once: true });
+    messageInput.addEventListener('keydown', detectUserGesture, { once: true });
+
     let agentConfig = null;
     let agentId = null;
     let globalSettings = {};
@@ -46,7 +82,30 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleInputModeBtn.addEventListener('click', toggleMode);
 
     // --- Initialization ---
-    window.electronAPI.onVoiceChatData(async (data) => {
+    // 等待 electronAPI 加载完成
+    function waitForElectronAPI(callback, maxAttempts = 50) {
+        let attempts = 0;
+
+        function check() {
+            attempts++;
+            if (window.electronAPI) {
+                console.log('[VoiceChat] electronAPI 已加载');
+                callback();
+            } else if (attempts < maxAttempts) {
+                console.log(`[VoiceChat] 等待 electronAPI 加载... (${attempts}/${maxAttempts})`);
+                setTimeout(check, 100);
+            } else {
+                console.error('[VoiceChat] electronAPI 加载超时');
+                agentNameSpan.textContent = "错误";
+                chatMessagesDiv.innerHTML = `<div class="message-item system"><p style="color: var(--danger-color);">electronAPI加载失败，请重启应用</p></div>`;
+            }
+        }
+
+        check();
+    }
+
+    waitForElectronAPI(() => {
+        window.electronAPI.onVoiceChatData(async (data) => {
         console.log('Received voice chat data:', data);
         const { agentId: receivedAgentId, theme } = data;
         
@@ -66,6 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
         agentNameSpan.textContent = `${agentConfig.name} - 语音模式`;
 
         initializeRenderer();
+        });
     });
 
     function initializeRenderer() {
@@ -223,20 +283,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (type === 'data') {
             window.messageRenderer.appendStreamChunk(messageId, chunk, context);
         } else if (type === 'end') {
+            console.log(`[VoiceChat] 收到流结束事件，messageId: ${messageId}`);
+            console.log(`[VoiceChat] 当前activeStreamingMessageId: ${activeStreamingMessageId}`);
+            console.log(`[VoiceChat] agentConfig状态: ${!!agentConfig}, TTS语音: ${agentConfig?.ttsVoicePrimary || '未设置'}`);
+
             window.messageRenderer.finalizeStreamedMessage(messageId, 'completed', context).then(() => {
-                const messageElement = document.getElementById(`message-item-${messageId}`);
-                let textToSpeak = '';
-                if (messageElement) {
-                    const contentElement = messageElement.querySelector('.md-content');
-                    if (contentElement) {
-                        const contentClone = contentElement.cloneNode(true);
-                        contentClone.querySelectorAll('.vcp-tool-use-bubble').forEach(el => el.remove());
-                        textToSpeak = contentClone.innerText || '';
-                    } else {
-                        textToSpeak = messageElement.textContent || messageElement.innerText;
-                    }
-                }
-                playTTS(textToSpeak.trim(), messageId);
+                console.log(`[VoiceChat] finalizeStreamedMessage完成，准备TTS`);
+
+                // 添加延迟以确保DOM完全渲染
+                setTimeout(() => {
+                    extractTextAndPlayTTS(messageId, 0);
+                }, 100);
             });
 
             activeStreams.delete(messageId);
@@ -258,9 +315,73 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
+    // 新增：智能文本提取和TTS触发函数，包含重试机制
+    function extractTextAndPlayTTS(messageId, retryCount = 0) {
+        const maxRetries = 10;
+        const retryDelay = 100;
+
+        const messageElement = document.getElementById(`message-item-${messageId}`);
+        let textToSpeak = '';
+
+        if (messageElement) {
+            const contentElement = messageElement.querySelector('.md-content');
+            if (contentElement) {
+                const contentClone = contentElement.cloneNode(true);
+                contentClone.querySelectorAll('.vcp-tool-use-bubble').forEach(el => el.remove());
+                textToSpeak = contentClone.innerText || '';
+            } else {
+                textToSpeak = messageElement.textContent || messageElement.innerText;
+            }
+            console.log(`[VoiceChat] 提取到文本长度: ${textToSpeak.length}`);
+            console.log(`[VoiceChat] 文本内容: ${textToSpeak.substring(0, 50)}...`);
+
+            // 如果提取到文本，调用TTS
+            if (textToSpeak.trim().length > 0) {
+                console.log(`[VoiceChat] 调用playTTS，文本长度: ${textToSpeak.trim().length}`);
+                playTTS(textToSpeak.trim(), messageId);
+            } else {
+                console.warn(`[VoiceChat] 警告：消息内容为空，跳过TTS`);
+            }
+        } else {
+            if (retryCount < maxRetries) {
+                console.log(`[VoiceChat] 消息元素未找到，${retryDelay}ms后重试 (${retryCount + 1}/${maxRetries}): message-item-${messageId}`);
+                setTimeout(() => {
+                    extractTextAndPlayTTS(messageId, retryCount + 1);
+                }, retryDelay);
+            } else {
+                console.error(`[VoiceChat] 错误：${maxRetries}次重试后仍未找到消息元素 message-item-${messageId}`);
+
+                // 最后尝试：直接从DOM中查找
+                const allMessageItems = document.querySelectorAll('.message-item');
+                console.log(`[VoiceChat] 找到 ${allMessageItems.length} 个消息元素，尝试匹配...`);
+
+                allMessageItems.forEach(item => {
+                    const idAttr = item.getAttribute('data-message-id');
+                    if (idAttr && idAttr.includes(messageId)) {
+                        console.log(`[VoiceChat] 找到备用匹配元素: ${idAttr}`);
+                        const contentElement = item.querySelector('.md-content');
+                        if (contentElement) {
+                            const backupText = contentElement.innerText || '';
+                            if (backupText.trim().length > 0) {
+                                console.log(`[VoiceChat] 使用备用元素提取到文本长度: ${backupText.trim().length}`);
+                                playTTS(backupText.trim(), messageId);
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     function playTTS(text, msgId) {
-        if (!text || !agentConfig.ttsVoicePrimary) return;
-        
+        if (!text) return;
+
+        if (!agentConfig.ttsVoicePrimary || agentConfig.ttsVoicePrimary === "") {
+            console.warn(`[VoiceChat] TTS voice not configured for this agent. Skipping TTS for message ${msgId}`);
+            return;
+        }
+
         console.log(`[VoiceChat] Requesting TTS for message ${msgId}`);
         window.electronAPI.sovitsSpeak({
             text: text,
@@ -277,6 +398,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentAudio = null;
     let audioQueue = []; // Queue for pending audio clips
     let isPlaying = false;
+    let audioContext = null;
+    let userGestureDetected = false;
 
     function processAudioQueue() {
         if (isPlaying || audioQueue.length === 0) {
@@ -286,7 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
         isPlaying = true;
         const { audioData, msgId } = audioQueue.shift(); // Get the next audio from the queue
 
-        console.log(`[VoiceChat] Playing audio from queue for msgId ${msgId}`);
+        console.log(`[VoiceChat] Processing audio from queue for msgId ${msgId}`);
 
         const byteCharacters = atob(audioData);
         const byteNumbers = new Array(byteCharacters.length);
@@ -299,8 +422,57 @@ document.addEventListener('DOMContentLoaded', () => {
 
         currentAudio = new Audio(audioUrl);
 
-        currentAudio.play().catch(e => {
+        // Check if user gesture has been detected
+        if (!userGestureDetected) {
+            console.warn('[VoiceChat] No user gesture detected, audio may be blocked');
+            // Show user a hint
+            const messageElement = document.querySelector(`[data-message-id="${msgId}"]`);
+            if (messageElement) {
+                const hint = document.createElement('div');
+                hint.className = 'audio-playback-hint';
+                hint.textContent = '点击任意位置以启用语音播放';
+                hint.style.cssText = 'color: var(--warning-color); font-size: 0.8em; margin-top: 5px; cursor: pointer;';
+                hint.addEventListener('click', detectUserGesture);
+                messageElement.appendChild(hint);
+
+                // Remove hint after 5 seconds
+                setTimeout(() => {
+                    if (hint.parentNode) {
+                        hint.remove();
+                    }
+                }, 5000);
+            }
+        }
+
+        currentAudio.play().then(() => {
+            console.log(`[VoiceChat] Audio playback started for msgId ${msgId}`);
+        }).catch(e => {
             console.error("Audio playback failed:", e);
+
+            // Show error message to user
+            const messageElement = document.querySelector(`[data-message-id="${msgId}"]`);
+            if (messageElement) {
+                const errorMsg = document.createElement('div');
+                errorMsg.className = 'audio-playback-error';
+                errorMsg.textContent = '语音播放失败，请点击页面任意位置后重试';
+                errorMsg.style.cssText = 'color: var(--danger-color); font-size: 0.8em; margin-top: 5px; cursor: pointer;';
+                errorMsg.addEventListener('click', () => {
+                    detectUserGesture();
+                    errorMsg.remove();
+                    // Retry playing this audio
+                    audioQueue.unshift({ audioData, msgId });
+                    processAudioQueue();
+                });
+                messageElement.appendChild(errorMsg);
+
+                // Remove error after 10 seconds
+                setTimeout(() => {
+                    if (errorMsg.parentNode) {
+                        errorMsg.remove();
+                    }
+                }, 10000);
+            }
+
             isPlaying = false; // Reset flag on error
             processAudioQueue(); // Try to play the next one
         });

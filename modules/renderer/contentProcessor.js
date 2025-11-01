@@ -191,177 +191,21 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
     }
 }
 
-/**
- * Highlights @tag patterns within the text nodes of a given HTML element.
- * @param {HTMLElement} messageElement - The HTML element containing the message content.
- */
-function highlightTagsInMessage(messageElement) {
-    if (!messageElement) return;
-
-    const tagRegex = /@([\u4e00-\u9fa5A-Za-z0-9_]+)/g;
-    const walker = document.createTreeWalker(
-        messageElement,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-    );
-
-    let node;
-    const nodesToProcess = [];
-
-    while (node = walker.nextNode()) {
-        if (node.parentElement.tagName === 'STYLE' ||
-            node.parentElement.tagName === 'SCRIPT' ||
-            node.parentElement.classList.contains('highlighted-tag')) {
-            continue;
-        }
-
-        const text = node.nodeValue;
-        let match;
-        const matches = [];
-        tagRegex.lastIndex = 0;
-        while ((match = tagRegex.exec(text)) !== null) {
-            matches.push({
-                index: match.index,
-                tagText: match[0],
-                tagName: match[1]
-            });
-        }
-
-        if (matches.length > 0) {
-            nodesToProcess.push({ node, matches });
-        }
-    }
-
-    for (let i = nodesToProcess.length - 1; i >= 0; i--) {
-        const { node, matches } = nodesToProcess[i];
-        let currentNode = node;
-
-        for (let j = matches.length - 1; j >= 0; j--) {
-            const matchInfo = matches[j];
-            const textAfterMatch = currentNode.splitText(matchInfo.index + matchInfo.tagText.length);
-
-            const span = document.createElement('span');
-            span.className = 'highlighted-tag';
-            span.textContent = matchInfo.tagText;
-
-            currentNode.parentNode.insertBefore(span, textAfterMatch);
-            currentNode.nodeValue = currentNode.nodeValue.substring(0, matchInfo.index);
-        }
-    }
-}
+const TAG_REGEX = /@([\u4e00-\u9fa5A-Za-z0-9_]+)/g;
+const BOLD_REGEX = /\*\*([^\*]+)\*\*/g;
+const QUOTE_REGEX = /(?:"([^"]*)"|“([^”]*)”)/g; // Matches English "..." and Chinese “...”
 
 /**
- * Highlights text within double quotes in a given HTML element.
- * @param {HTMLElement} messageElement - The HTML element containing the message content.
+ * 一次性高亮所有文本模式（标签、粗体、引号），替换旧的多次遍历方法
+ * @param {HTMLElement} messageElement The message content element.
  */
-function highlightQuotesInMessage(messageElement) {
+function highlightAllPatternsInMessage(messageElement) {
     if (!messageElement) return;
 
-    const quoteRegex = /(?:"([^"]*)"|“([^”]*)”)/g; // Matches English "..." and Chinese “...”
     const walker = document.createTreeWalker(
         messageElement,
         NodeFilter.SHOW_TEXT,
         (node) => {
-            // 过滤：已在高亮/KaTeX/代码等环境，或父节点包含内联样式（AI 富文本）
-            let parent = node.parentElement;
-            while (parent && parent !== messageElement && parent !== document.body) {
-                if (
-                    (parent.classList && (parent.classList.contains('highlighted-quote') ||
-                                          parent.classList.contains('highlighted-tag') ||
-                                          parent.classList.contains('katex'))) ||
-                    parent.tagName === 'STYLE' ||
-                    parent.tagName === 'SCRIPT' ||
-                    parent.tagName === 'PRE' ||
-                    parent.tagName === 'CODE'
-                    /* (parent.hasAttribute && parent.hasAttribute('style')) */ // This rule was too aggressive, preventing highlights in AI-generated rich content.
-                ) {
-                    return NodeFilter.FILTER_REJECT;
-                }
-                parent = parent.parentElement;
-            }
-            return NodeFilter.FILTER_ACCEPT;
-        },
-        false
-    );
-
-    let node;
-    const nodesToProcess = [];
-
-    try {
-        while ((node = walker.nextNode())) {
-            const parentEl = node.parentElement;
-            // 跳过：父元素内含有子元素（复杂富文本），避免跨标签切割 - This rule was too aggressive and is now disabled to allow highlighting in more complex structures.
-            // if (!parentEl || parentEl.children.length > 0) continue;
-
-            const text = node.nodeValue || '';
-            let match;
-            const matches = [];
-            quoteRegex.lastIndex = 0;
-            while ((match = quoteRegex.exec(text)) !== null) {
-                const contentGroup1 = match[1];
-                const contentGroup2 = match[2];
-                if ((contentGroup1 && contentGroup1.length > 0) || (contentGroup2 && contentGroup2.length > 0)) {
-                    matches.push({
-                        index: match.index,
-                        fullMatch: match[0],
-                    });
-                }
-            }
-
-            if (matches.length > 0) {
-                nodesToProcess.push({ node, matches });
-            }
-        }
-    } catch (error) {
-        if (error.message.includes("The provided callback is no longer runnable")) {
-            console.warn("highlightQuotesInMessage: TreeWalker failed, likely due to concurrent DOM modification. Processing collected nodes and stopping traversal.");
-        } else {
-            console.error("highlightQuotesInMessage: Error during TreeWalker traversal.", error);
-        }
-    }
-
-    // 逆序处理，避免索引失效
-    for (let i = nodesToProcess.length - 1; i >= 0; i--) {
-        const { node, matches } = nodesToProcess[i];
-        let currentNode = node;
-
-        for (let j = matches.length - 1; j >= 0; j--) {
-            const matchInfo = matches[j];
-
-            // 在匹配末尾切分
-            const textAfterNode = currentNode.splitText(matchInfo.index + matchInfo.fullMatch.length);
-
-            // 包裹为可断行的高亮片段
-            const span = document.createElement('span');
-            span.className = 'highlighted-quote';
-            span.textContent = matchInfo.fullMatch;
-
-            // 插入 span 与一个零宽空格，提供断行机会
-            currentNode.parentNode.insertBefore(span, textAfterNode);
-            const zwsp = document.createTextNode('\u200B');
-            currentNode.parentNode.insertBefore(zwsp, textAfterNode);
-
-            // 截断原节点
-            currentNode.nodeValue = currentNode.nodeValue.substring(0, matchInfo.index);
-        }
-    }
-}
-
-/**
- * Highlights text within double asterisks (**) as bold.
- * This runs after the main markdown parsing to catch patterns inside pre-generated HTML.
- * @param {HTMLElement} messageElement - The HTML element containing the message content.
- */
-function highlightBoldTextInMessage(messageElement) {
-    if (!messageElement) return;
-
-    const boldRegex = /\*\*([^\*]+)\*\*/g;
-    const walker = document.createTreeWalker(
-        messageElement,
-        NodeFilter.SHOW_TEXT,
-        (node) => {
-            // Filter out nodes within code blocks, preformatted text, or already highlighted elements
             let parent = node.parentElement;
             while (parent && parent !== messageElement) {
                 if (['PRE', 'CODE', 'STYLE', 'SCRIPT', 'STRONG', 'B'].includes(parent.tagName) ||
@@ -378,45 +222,89 @@ function highlightBoldTextInMessage(messageElement) {
 
     const nodesToProcess = [];
     let node;
-    while (node = walker.nextNode()) {
-        const text = node.nodeValue;
-        boldRegex.lastIndex = 0; // Reset regex state
-        if (boldRegex.test(text)) {
-            nodesToProcess.push(node);
+
+    try {
+        while ((node = walker.nextNode())) {
+            const text = node.nodeValue || '';
+            if (!text) continue;
+            const matches = [];
+
+            // 收集所有匹配
+            let match;
+            while ((match = TAG_REGEX.exec(text)) !== null) {
+                matches.push({ type: 'tag', index: match.index, length: match[0].length, content: match[0] });
+            }
+            while ((match = BOLD_REGEX.exec(text)) !== null) {
+                matches.push({ type: 'bold', index: match.index, length: match[0].length, content: match[1] });
+            }
+            while ((match = QUOTE_REGEX.exec(text)) !== null) {
+                // 确保引号内有内容
+                if (match[1] || match[2]) {
+                    matches.push({ type: 'quote', index: match.index, length: match[0].length, content: match[0] });
+                }
+            }
+
+            if (matches.length > 0) {
+                // 按位置排序
+                matches.sort((a, b) => a.index - b.index);
+                nodesToProcess.push({ node, matches });
+            }
+        }
+    } catch (error) {
+        if (!error.message.includes("no longer runnable")) {
+            console.error("highlightAllPatterns: TreeWalker error", error);
         }
     }
 
-    // Process nodes in reverse to avoid issues with node splitting and indices
+    // 逆序处理节点
     for (let i = nodesToProcess.length - 1; i >= 0; i--) {
-        const node = nodesToProcess[i];
-        const text = node.nodeValue;
+        const { node, matches } = nodesToProcess[i];
+        if (!node.parentNode) continue;
+
+        // 健壮的重叠匹配过滤逻辑
+        const filteredMatches = [];
+        let lastIndexProcessed = -1;
+        for (const currentMatch of matches) {
+            if (currentMatch.index >= lastIndexProcessed) {
+                filteredMatches.push(currentMatch);
+                lastIndexProcessed = currentMatch.index + currentMatch.length;
+            }
+        }
+
+        if (filteredMatches.length === 0) continue;
+
         const fragment = document.createDocumentFragment();
         let lastIndex = 0;
-        let match;
 
-        boldRegex.lastIndex = 0; // Reset regex state for execution
-
-        while ((match = boldRegex.exec(text)) !== null) {
-            // Add text before the match
+        // 构建新的节点结构
+        filteredMatches.forEach(match => {
+            // 添加匹配前的文本
             if (match.index > lastIndex) {
-                fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
+                fragment.appendChild(document.createTextNode(node.nodeValue.substring(lastIndex, match.index)));
             }
-            // Create and add the bold element
-            const strong = document.createElement('strong');
-            strong.textContent = match[1]; // Group 1 is the content between **
-            fragment.appendChild(strong);
-            lastIndex = match.index + match[0].length;
+
+            // 创建高亮元素
+            const span = document.createElement(match.type === 'bold' ? 'strong' : 'span');
+            if (match.type === 'tag') {
+                span.className = 'highlighted-tag';
+                span.textContent = match.content;
+            } else if (match.type === 'quote') {
+                span.className = 'highlighted-quote';
+                span.textContent = match.content;
+            } else { // bold
+                span.textContent = match.content;
+            }
+            fragment.appendChild(span);
+
+            lastIndex = match.index + match.length;
+        });
+
+        // 添加剩余文本
+        if (lastIndex < node.nodeValue.length) {
+            fragment.appendChild(document.createTextNode(node.nodeValue.substring(lastIndex)));
         }
 
-        // Add any remaining text after the last match
-        if (lastIndex < text.length) {
-            fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
-        }
-
-        // Replace the original text node with the new fragment
-        if (node.parentNode) {
-            node.parentNode.replaceChild(fragment, node);
-        }
+        node.parentNode.replaceChild(fragment, node);
     }
 }
 
@@ -700,22 +588,6 @@ function processRenderedContent(contentDiv) {
     }
 }
 
-/**
- * Runs all text-based highlighting that relies on TreeWalker and a stable DOM.
- * This should be called asynchronously after the main content is rendered to avoid race conditions.
- * @param {HTMLElement} contentDiv The message content element.
- */
-function runTextHighlights(contentDiv) {
-    if (!contentDiv) return;
-
-    // Highlighting order is important for nested formats like **"@tag"**
-    // The original order (tags -> quotes -> bold) is better for handling nested cases.
-    // The order is important for nested formats like **"text"**.
-    // Process bolding first, then quotes, to allow quotes to be highlighted inside bolded text.
-    highlightTagsInMessage(contentDiv);
-    highlightBoldTextInMessage(contentDiv);
-    highlightQuotesInMessage(contentDiv);
-}
 
 
 /**
@@ -724,43 +596,79 @@ function runTextHighlights(contentDiv) {
  * @param {string} scopeId - 唯一的作用域 ID (不带 #)。
  * @returns {string} 处理后的 CSS 文本。
  */
-function scopeCss(cssString, scopeId) {
-    // 相对健壮的正则表达式，用于捕获选择器列表，同时跳过 @规则内部的选择器
-    // 捕获组 1: 选择器列表 (e.g., .card, h1)
-    // 捕获组 2: 逗号后紧跟 { 或空格后紧跟 { (用于确定选择器列表的结束)
-    return cssString.replace(/([^\r\n,{}]+)(,(?=[^}]*{)|\s*{)/g, (match, selector, separator) => {
-        const trimmedSelector = selector.trim();
-        
-        // 跳过 @规则内部的选择器 (如 @keyframes, @media)
-        if (trimmedSelector.includes('@') || trimmedSelector === 'from' || trimmedSelector === 'to' || /^\d+%$/.test(trimmedSelector)) {
-            return match;
-        }
-        
-        // 跳过全局选择器，防止意外覆盖客户端样式
-        if (trimmedSelector === 'html' || trimmedSelector === 'body' || trimmedSelector === ':root') {
-            return match;
-        }
+function scopeSelector(selector, scopeId) {
+    // 跳过特殊选择器
+    if (selector.match(/^(@|from|to|\d+%|:root|html|body)/)) {
+        return selector;
+    }
+    
+    // 处理伪类/伪元素
+    if (selector.match(/^::?[\w-]+$/)) {
+        return `#${scopeId}${selector}`;
+    }
+    
+    return `#${scopeId} ${selector}`;
+}
 
-        // 为每个选择器部分添加前缀
-        const scopedSelector = trimmedSelector
+function scopeCss(cssString, scopeId) {
+    // 1. 先移除注释
+    let css = cssString.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    // 2. 分割规则
+    const rules = [];
+    let depth = 0;
+    let currentRule = '';
+    
+    for (let i = 0; i < css.length; i++) {
+        const char = css[i];
+        currentRule += char;
+        
+        if (char === '{') depth++;
+        else if (char === '}') {
+            depth--;
+            if (depth === 0) {
+                rules.push(currentRule.trim());
+                currentRule = '';
+            }
+        }
+    }
+    
+    // 3. 处理每个规则
+    return rules.map(rule => {
+        const match = rule.match(/^([^{]+)\{(.+)\}$/s);
+        if (!match) return rule;
+        
+        const [, selectors, body] = match;
+        const scopedSelectors = selectors
             .split(',')
-            .map(part => {
-                const p = part.trim();
-                
-                // 检查是否是针对气泡根元素自身的伪类/伪元素 (例如 :hover, ::before)
-                // 如果选择器不包含空格，且以 : 或 :: 开头，则将其附加到 scopeId 上，而不是作为后代选择器。
-                if ((p.startsWith(':') || p.startsWith('::')) && !p.includes(' ')) {
-                    return `#${scopeId}${p}`;
-                }
-                
-                // 否则，作为后代选择器处理
-                return `#${scopeId} ${p}`;
-            })
+            .map(s => scopeSelector(s.trim(), scopeId))
             .join(', ');
         
-        // 恢复原始的分隔符 ({ 或 ,{)
-        return `${scopedSelector}${separator}`;
-    });
+        return `${scopedSelectors} { ${body} }`;
+    }).join('\n');
+}
+
+
+/**
+ * Applies a series of common text processing rules in a single pass.
+ * @param {string} text The input string.
+ * @returns {string} The processed string.
+ */
+function applyContentProcessors(text) {
+    if (typeof text !== 'string') return text;
+    
+    // Chain multiple regex replacements for efficiency
+    return text
+        // ensureNewlineAfterCodeBlock
+        .replace(/^(\s*```)(?![\r\n])/gm, '$1\n')
+        // ensureSpaceAfterTilde
+        .replace(/(^|[^\w/\\=])~(?![\s~])/g, '$1~ ')
+        // removeIndentationFromCodeBlockMarkers
+        .replace(/^(\s*)(```.*)/gm, '$2')
+         // removeSpeakerTags - Simplified regex to remove all occurrences at the start
+        .replace(/^(\[(?:(?!\]:\s).)*的发言\]:\s*)+/g, '')
+        // ensureSeparatorBetweenImgAndCode
+        .replace(/(<img[^>]+>)\s*(```)/g, '$1\n\n<!-- VCP-Renderer-Separator -->\n\n$2');
 }
 
 
@@ -773,13 +681,11 @@ export {
     ensureSeparatorBetweenImgAndCode,
     deIndentToolRequestBlocks,
     processAllPreBlocksInContentDiv,
-    highlightTagsInMessage,
-    highlightQuotesInMessage,
     processRenderedContent,
     processInteractiveButtons,
     handleAIButtonClick,
-    highlightBoldTextInMessage,
-    runTextHighlights, // Export the new async highlighter
+    highlightAllPatternsInMessage, // Export the new async highlighter
     sendButtonMessage,
-    scopeCss // Export the new CSS scoping function
+    scopeCss, // Export the new CSS scoping function
+    applyContentProcessors // Export the new batch processor
 };

@@ -73,6 +73,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onModelsUpdated: (callback) => ipcRenderer.on('models-updated', (_event, models) => callback(models)),
     getAllItems: () => ipcRenderer.invoke('get-all-items'),
     importRegexRules: (agentId) => ipcRenderer.invoke('import-regex-rules', agentId),
+    updateAgentConfig: (agentId, updates) => ipcRenderer.invoke('update-agent-config', agentId, updates),
+    
+    // Prompt Modules
+    loadPresetPrompts: (presetPath) => ipcRenderer.invoke('load-preset-prompts', presetPath),
+    loadPresetContent: (filePath) => ipcRenderer.invoke('load-preset-content', filePath),
+    selectDirectory: () => ipcRenderer.invoke('select-directory'),
+    getActiveSystemPrompt: (agentId) => ipcRenderer.invoke('get-active-system-prompt', agentId),
+    programmaticSetPromptMode: (agentId, mode) => ipcRenderer.invoke('programmatic-set-prompt-mode', agentId, mode),
+    onReloadAgentSettings: (callback) => ipcRenderer.on('reload-agent-settings', (_event, data) => callback(data)),
 
     // Topic related
     getAgentTopics: (agentId) => ipcRenderer.invoke('get-agent-topics', agentId),
@@ -131,6 +140,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // VCP Communication
     sendToVCP: (vcpUrl, vcpApiKey, messages, modelConfig, messageId, isGroupCall, context) => ipcRenderer.invoke('send-to-vcp', vcpUrl, vcpApiKey, messages, modelConfig, messageId, isGroupCall, context),
     onVCPStreamEvent: (callback) => ipcRenderer.on('vcp-stream-event', (_event, eventData) => callback(eventData)),
+    onVCPStreamChunk: (callback) => ipcRenderer.on('vcp-stream-chunk', (_event, chunkData) => callback(chunkData)),
     interruptVcpRequest: (data) => ipcRenderer.invoke('interrupt-vcp-request', data),
     // Group Chat
     createAgentGroup: (groupName, initialConfig) => ipcRenderer.invoke('create-agent-group', groupName, initialConfig),
@@ -209,6 +219,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onWindowMaximized: (callback) => ipcRenderer.on('window-maximized', (_event) => callback()),
     onWindowUnmaximized: (callback) => ipcRenderer.on('window-unmaximized', (_event) => callback()),
     minimizeToTray: () => ipcRenderer.send('minimize-to-tray'),
+    // Splash Screen Close
+    closeApp: () => ipcRenderer.send('close-app'),
  
      // Image Context Menu
      showImageContextMenu: (imageUrl) => ipcRenderer.send('show-image-context-menu', imageUrl),
@@ -294,6 +306,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveCanvasFile: (file) => ipcRenderer.send('save-canvas-file', file),
     onCanvasLoadData: (callback) => ipcRenderer.on('canvas-load-data', (_event, data) => callback(data)),
     onCanvasFileChanged: (callback) => ipcRenderer.on('canvas-file-changed', (_event, file) => callback(file)),
+    onExternalFileChanged: (callback) => ipcRenderer.on('external-file-changed', (_event, file) => callback(file)), // Add this line
     onCanvasContentUpdate: (callback) => ipcRenderer.on('canvas-content-update', (_event, data) => callback(data)),
     onLoadCanvasFileByPath: (callback) => ipcRenderer.on('load-canvas-file-by-path', (_event, filePath) => callback(filePath)),
     onCanvasWindowClosed: (callback) => ipcRenderer.on('canvas-window-closed', (_event) => callback()),
@@ -304,6 +317,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Watcher controls
     watcherStart: (filePath, agentId, topicId) => ipcRenderer.invoke('watcher:start', filePath, agentId, topicId),
     watcherStop: () => ipcRenderer.invoke('watcher:stop'),
+    
+    // Flowlock Control - for AI to control flowlock like a human user
+    onFlowlockCommand: (callback) => ipcRenderer.on('flowlock-command', (_event, data) => callback(data)),
+    sendFlowlockResponse: (data) => ipcRenderer.send('flowlock-response', data),
 });
 
 // Log the electronAPI object as it's defined in preload.js right after exposing it

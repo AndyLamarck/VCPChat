@@ -170,7 +170,6 @@ const uiManager = (() => {
         // Listen for theme updates broadcast from the main process
         if (electronAPI && electronAPI.onThemeUpdated) {
             electronAPI.onThemeUpdated((theme) => {
-                // The theme might be a simple string from broadcast or an object from a direct reply
                 const themeName = typeof theme === 'object' && theme !== null ? theme.theme : theme;
                 if (themeName) {
                     applyTheme(themeName);
@@ -178,16 +177,26 @@ const uiManager = (() => {
             });
         }
 
-        // Get the initial theme from the main process (which reads it from settings.json)
-        // Note: This is slightly redundant if renderer.js also applies the theme on load,
-        // but centralizing it here is cleaner. We'll remove the logic from renderer.js.
-        if (electronAPI && electronAPI.getCurrentTheme) {
-            try {
-                const currentTheme = await electronAPI.getCurrentTheme();
-                applyTheme(currentTheme);
-            } catch (error) {
-                console.error('[UIManager] Failed to get initial theme:', error);
-                applyTheme('light'); // Fallback
+        // Apply the initial theme based on the settings loaded in the renderer process.
+        // This ensures the UI matches the settings file immediately on load.
+        const settings = globalSettingsRef.get();
+        if (settings && settings.currentThemeMode && electronAPI.setTheme) {
+            console.log(`[UIManager] Applying initial theme from settings: ${settings.currentThemeMode}`);
+            // We tell the main process to set the theme. The onThemeUpdated listener
+            // above will then catch the broadcast and call applyTheme(), ensuring a single
+            // consistent flow for all theme changes.
+            electronAPI.setTheme(settings.currentThemeMode);
+        } else {
+            // Fallback if the setting is not present for some reason.
+            console.warn('[UIManager] currentThemeMode not found in settings, falling back to requesting from main process.');
+            if (electronAPI && electronAPI.getCurrentTheme) {
+                try {
+                    const currentTheme = await electronAPI.getCurrentTheme();
+                    applyTheme(currentTheme);
+                } catch (error) {
+                    console.error('[UIManager] Fallback failed to get initial theme:', error);
+                    applyTheme('light'); // Final fallback
+                }
             }
         }
     }
@@ -236,8 +245,25 @@ const uiManager = (() => {
     function setupSidebarTabs() {
         if (sidebarTabButtons) {
             sidebarTabButtons.forEach(button => {
+                // 左键点击 - 切换标签
                 button.addEventListener('click', () => {
                     switchToTab(button.dataset.tab);
+                });
+                
+                // 中键点击 - 如果是设置标签，直接打开全局设置
+                button.addEventListener('mousedown', (e) => {
+                    if (e.button === 1 && button.dataset.tab === 'settings') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        // 打开全局设置模态框
+                        if (window.uiHelperFunctions && window.uiHelperFunctions.openModal) {
+                            console.log('[UIManager] Middle click on settings tab - opening global settings modal');
+                            window.uiHelperFunctions.openModal('globalSettingsModal');
+                        } else {
+                            console.warn('[UIManager] uiHelperFunctions.openModal not available');
+                        }
+                    }
                 });
             });
             // Default to 'agents' tab (or your preferred default)
@@ -267,7 +293,20 @@ const uiManager = (() => {
                         }
                     } else if (targetTab === 'settings') {
                         if (window.settingsManager) {
-                            window.settingsManager.displaySettingsForItem();
+                            // 检查是否有待刷新的 Agent
+                            const pendingAgentId = sessionStorage.getItem('pendingAgentReload');
+                            if (pendingAgentId) {
+                                console.log('[UIManager] Detected pending agent reload, reloading:', pendingAgentId);
+                                sessionStorage.removeItem('pendingAgentReload');
+                                // 延迟执行以确保标签页切换完成
+                                setTimeout(() => {
+                                    if (window.settingsManager && typeof window.settingsManager.reloadAgentSettings === 'function') {
+                                        window.settingsManager.reloadAgentSettings(pendingAgentId);
+                                    }
+                                }, 50);
+                            } else {
+                                window.settingsManager.displaySettingsForItem();
+                            }
                         }
                     } else if (targetTab === 'agents') { // Assuming 'agents' is the ID for the items list tab content
                         // 重置鼠标事件状态，确保双击功能正常工作
@@ -286,7 +325,7 @@ const uiManager = (() => {
 
     // --- Public API ---
     return {
-        init: (options) => {
+        init: async (options) => {
             electronAPI = options.electronAPI;
             globalSettingsRef = options.refs.globalSettingsRef;
 
@@ -310,7 +349,7 @@ const uiManager = (() => {
             // Initialize all features
             setupTitleBarControls();
             initializeResizers();
-            initializeTheme(); // Replaces loadAndApplyThemePreference
+            await initializeTheme(); // Replaces loadAndApplyThemePreference
             initializeDigitalClock();
             setupSidebarTabs();
 
