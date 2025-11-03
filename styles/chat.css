@@ -30,13 +30,23 @@ body.light-theme .chat-header {
 }
 
 #sun-icon {
-    stroke: #FFD700; 
-    fill: #FFD700;   
+    stroke: gold; /* Color for the sun's rays */
+    fill: gold;   /* Color for the sun's central circle */
+    display: block;
 }
 
 #moon-icon {
-    stroke: #6495ED; 
-    fill: #6495ED;   
+    fill: cornflowerblue; /* A softer blue for the moon */
+    stroke: none;         /* Moon has no outline */
+    display: none;
+}
+
+body.light-theme #sun-icon {
+    display: none;
+}
+
+body.light-theme #moon-icon {
+    display: block;
 }
 
 .chat-messages-container {
@@ -670,6 +680,35 @@ body.light-theme .suggestion-item {
 .suggestion-item.active {
     background-color: var(--accent-bg);
     color: var(--highlight-text);
+}
+.suggestion-item {  
+    padding: 8px 12px;  
+    color: var(--primary-text);  
+    cursor: pointer;  
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);  
+    font-size: 14px;  
+    display: flex;  
+    justify-content: space-between;  
+    align-items: center;  
+    gap: 12px;  
+}  
+  
+.suggestion-name {  
+    flex-shrink: 0;  
+    white-space: nowrap;  
+    overflow: hidden;  
+    text-overflow: ellipsis;  
+}  
+  
+.suggestion-path {  
+    color: var(--secondary-text);  
+    opacity: 0.6;  
+    font-size: 0.85em;  
+    text-align: right;  
+    white-space: nowrap;  
+    overflow: hidden;  
+    text-overflow: ellipsis;  
+    flex-shrink: 1;  
 }
 /* --- Light Theme Code Block Styles --- */
 body.light-theme .message-item .md-content pre {

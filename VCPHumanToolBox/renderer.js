@@ -839,20 +839,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         let finalToolName = toolName;
 
         const tool = tools[toolName];
-        if (tool.commands) {
-            const command = formData.get('command');
-            finalToolName = `${toolName}.${command}`;
-        }
+        // The finalToolName is always the toolName. The 'command' is an argument.
 
         for (let [key, value] of formData.entries()) {
-            if (key !== 'command') {
-                // Handle checkbox
-                const inputElement = toolForm.querySelector(`[name="${key}"]`);
-                if (inputElement && inputElement.type === 'checkbox') {
-                    args[key] = inputElement.checked;
-                } else if (value) {
-                    args[key] = value;
-                }
+            // Handle checkbox
+            const inputElement = toolForm.querySelector(`[name="${key}"]`);
+            if (inputElement && inputElement.type === 'checkbox') {
+                args[key] = inputElement.checked;
+            } else if (value) {
+                args[key] = value;
             }
         }
 
