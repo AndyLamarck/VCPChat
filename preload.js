@@ -75,6 +75,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     importRegexRules: (agentId) => ipcRenderer.invoke('import-regex-rules', agentId),
     updateAgentConfig: (agentId, updates) => ipcRenderer.invoke('update-agent-config', agentId, updates),
     
+    // [新增] 为全局仓库添加IPC接口
+    getGlobalWarehouse: () => ipcRenderer.invoke('get-global-warehouse'),
+    saveGlobalWarehouse: (data) => ipcRenderer.invoke('save-global-warehouse', data),
+    
     // Prompt Modules
     loadPresetPrompts: (presetPath) => ipcRenderer.invoke('load-preset-prompts', presetPath),
     loadPresetContent: (filePath) => ipcRenderer.invoke('load-preset-content', filePath),
@@ -298,6 +302,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startSpeechRecognition: () => ipcRenderer.send('start-speech-recognition'),
     stopSpeechRecognition: () => ipcRenderer.send('stop-speech-recognition'),
     onSpeechRecognitionResult: (callback) => ipcRenderer.on('speech-recognition-result', (_event, text) => callback(text)),
+
+    // Forum Module
+    openForumWindow: () => ipcRenderer.send('open-forum-window'),
+    loadForumConfig: () => ipcRenderer.invoke('load-forum-config'),
+    saveForumConfig: (config) => ipcRenderer.invoke('save-forum-config', config),
+    loadAgentsList: () => ipcRenderer.invoke('load-agents-list'),
+    loadUserAvatar: () => ipcRenderer.invoke('load-user-avatar'),
+    loadAgentAvatar: (folderName) => ipcRenderer.invoke('load-agent-avatar', folderName),
 
     // Canvas Module
     openCanvasWindow: () => ipcRenderer.invoke('open-canvas-window'),

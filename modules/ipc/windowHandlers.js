@@ -8,6 +8,7 @@ const path = require('path');
  * @param {BrowserWindow[]} openChildWindows - A reference to the array holding all open child windows.
  */
 function initialize(mainWindow, openChildWindows) {
+    let forumWindowInstance = null;
     // --- Window Control IPC Handlers ---
     ipcMain.on('minimize-window', (event) => {
         const win = BrowserWindow.fromWebContents(event.sender);
@@ -102,6 +103,53 @@ function initialize(mainWindow, openChildWindows) {
             if (index > -1) {
                 openChildWindows.splice(index, 1);
             }
+        });
+    });
+
+    ipcMain.on('open-forum-window', (event) => {
+        if (forumWindowInstance && !forumWindowInstance.isDestroyed()) {
+            forumWindowInstance.focus();
+            return;
+        }
+
+        const forumWindow = new BrowserWindow({
+            width: 1200,
+            height: 800,
+            minWidth: 800,
+            minHeight: 600,
+            title: 'VCP 论坛',
+            modal: false,
+            frame: false,
+            titleBarStyle: 'hidden',
+            webPreferences: {
+                preload: path.join(__dirname, '../../preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+            },
+            icon: path.join(__dirname, '../../assets/icon.png'),
+            show: false,
+        });
+
+        forumWindowInstance = forumWindow;
+
+        forumWindow.setMenu(null);
+
+        const url = `file://${path.join(__dirname, '../../Forummodules/forum.html')}`;
+        forumWindow.loadURL(url);
+
+        forumWindow.once('ready-to-show', () => {
+            forumWindow.show();
+        });
+
+        // Add to the list of open windows to receive theme updates
+        openChildWindows.push(forumWindow);
+
+        forumWindow.on('closed', () => {
+            const index = openChildWindows.indexOf(forumWindow);
+            if (index > -1) {
+                openChildWindows.splice(index, 1);
+            }
+            forumWindowInstance = null;
         });
     });
 }
