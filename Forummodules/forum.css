@@ -302,6 +302,7 @@ body.light-theme #board-filter:focus {
     border-radius: 12px;
     color: var(--text-primary);
     font-size: 1rem;
+    caret-color: var(--text-primary);
 }
 .glass-input:focus {
     outline: none;
@@ -525,6 +526,118 @@ body.light-theme #board-filter:focus {
     font-style: normal; /* Reset font style to normal */
     opacity: 1; /* Ensure full opacity */
     margin-bottom: 20px;
+}
+
+/* --- AI-Generated HTML Content Support --- */
+/* Ensure block-level HTML elements display correctly with proper spacing */
+.post-preview div,
+.reply-content div,
+.expanded-card .post-preview div,
+.reply-item div {
+    display: block;
+    margin: 10px 0;
+    white-space: normal;
+    word-wrap: break-word;
+}
+
+/* Preserve inline styles from AI-generated content */
+.post-preview div[style],
+.reply-content div[style],
+.expanded-card .post-preview div[style],
+.reply-item div[style] {
+    /* Allow inline styles to take precedence while ensuring basic display */
+    display: block !important;
+}
+
+/* Support for styled headings in AI content */
+.post-preview h1, .post-preview h2, .post-preview h3,
+.post-preview h4, .post-preview h5, .post-preview h6,
+.reply-content h1, .reply-content h2, .reply-content h3,
+.reply-content h4, .reply-content h5, .reply-content h6 {
+    display: block;
+    margin: 15px 0 10px 0;
+    font-weight: bold;
+    line-height: 1.4;
+}
+
+/* Paragraphs in AI-generated content */
+.post-preview p,
+.reply-content p {
+    display: block;
+    margin: 10px 0;
+    line-height: 1.6;
+}
+
+/* Lists in AI-generated content */
+.post-preview ul, .post-preview ol,
+.reply-content ul, .reply-content ol {
+    display: block;
+    margin: 10px 0;
+    padding-left: 30px;
+}
+
+.post-preview li,
+.reply-content li {
+    display: list-item;
+    margin: 5px 0;
+}
+
+/* Strong and emphasis in AI content */
+.post-preview strong,
+.reply-content strong {
+    font-weight: 700;
+}
+
+.post-preview em,
+.reply-content em {
+    font-style: italic;
+}
+
+/* Code blocks in AI content */
+.post-preview pre,
+.reply-content pre {
+    display: block;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 15px;
+    border-radius: 8px;
+    margin: 15px 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.post-preview code,
+.reply-content code {
+    font-family: 'Courier New', Courier, monospace;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+/* Inline spans with styles (like highlighted quotes) */
+.post-preview span,
+.reply-content span {
+    white-space: normal;
+}
+
+/* Blockquotes in AI content */
+.post-preview blockquote,
+.reply-content blockquote {
+    display: block;
+    margin: 15px 0;
+    padding: 10px 20px;
+    border-left: 4px solid var(--accent-color);
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 0 8px 8px 0;
+}
+
+/* Horizontal rules */
+.post-preview hr,
+.reply-content hr {
+    display: block;
+    border: none;
+    border-top: 1px solid var(--glass-border);
+    margin: 20px 0;
 }
 
 /* Ensure images in posts are fully opaque and visible */
@@ -761,6 +874,33 @@ img[src*="file://"] {
     color: var(--primary-text);
 }
 
+/* --- AI-Generated Inline Styles Support --- */
+/* Ensure content area allows for block display and proper spacing */
+.post-preview,
+.reply-content,
+.expanded-card .post-preview {
+    display: block;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    word-break: break-word;
+    white-space: normal;
+}
+
+/* Allow nested divs with background colors and borders to display properly */
+.post-preview > div,
+.reply-content > div {
+    margin: 15px 0;
+}
+
+/* Ensure images within styled divs are visible */
+.post-preview div img,
+.reply-content div img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 10px auto;
+}
+
 
 /* --- Animations --- */
 @keyframes spin {
@@ -861,4 +1001,167 @@ img[src*="file://"] {
 
 .post-preview tr:hover, .reply-content tr:hover {
     background-color: var(--glass-shine);
+}
+
+/* --- NEW: Dual Avatar Styles --- */
+.author-info-with-time {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+
+.time-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.meta-separator {
+    width: 2px;
+    height: 40px;
+    background: linear-gradient(to bottom, transparent, var(--glass-border) 20%, var(--glass-border) 80%, transparent);
+    margin: 0 15px;
+    flex-shrink: 0;
+}
+
+/* Ensure the post-meta container uses flexbox for dual layout */
+.post-card .post-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+
+/* --- Unified Textarea Scrollbar Styles --- */
+.edit-textarea::-webkit-scrollbar,
+#post-content-input::-webkit-scrollbar,
+.reply-input::-webkit-scrollbar {
+    width: 8px;
+}
+
+.edit-textarea::-webkit-scrollbar-track,
+#post-content-input::-webkit-scrollbar-track,
+.reply-input::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.edit-textarea::-webkit-scrollbar-thumb,
+#post-content-input::-webkit-scrollbar-thumb,
+.reply-input::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+.edit-textarea::-webkit-scrollbar-thumb:hover,
+#post-content-input::-webkit-scrollbar-thumb:hover,
+.reply-input::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+
+/* --- User Emoticon Panel --- */
+.emoticon-panel {
+    display: none;
+    position: fixed;
+    width: 270px; /* Adjusted to account for scrollbar width */
+    height: 240px; /* Increased height for title */
+    background-color: var(--panel-bg-dark);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+    padding: 10px;
+    box-sizing: border-box;
+    z-index: 3500; /* Higher than post modals (z-index: 3000) */
+    /* New layout properties */
+    flex-direction: column;
+    /* display: flex; is set by JS */
+}
+
+.emoticon-panel-title {
+    font-size: 0.8em;
+    color: var(--highlight-text);
+    margin-bottom: 8px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.emoticon-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    overflow-y: auto;
+    flex-grow: 1;
+}
+
+/* --- Custom Scrollbar for Emoticon Panel --- */
+.emoticon-grid::-webkit-scrollbar {
+    width: 8px;
+}
+
+.emoticon-grid::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 4px;
+}
+
+.emoticon-grid::-webkit-scrollbar-thumb {
+    background-color: var(--accent-color);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+.emoticon-grid::-webkit-scrollbar-thumb:hover {
+    background-color: var(--accent-color-dark);
+}
+
+body.light-theme .emoticon-panel {
+    background-color: var(--panel-bg-light);
+}
+
+.emoticon-item {
+    width: 52px;
+    height: 52px;
+    object-fit: contain;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 3px;
+    box-sizing: border-box;
+    transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.emoticon-item:hover {
+    transform: scale(1.1);
+    background-color: var(--accent-bg);
+}
+
+.emoticon-item-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--secondary-text);
+    font-size: 0.9em;
+}
+
+/* --- Emoticon Button Style --- */
+.emoticon-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    padding: 5px;
+    opacity: 0.7;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    color: var(--text-secondary);
+}
+
+.emoticon-btn:hover {
+    opacity: 1;
+    transform: scale(1.1);
 }

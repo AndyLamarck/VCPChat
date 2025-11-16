@@ -4,14 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Allow data: images for avatars/previews if needed, unsafe-inline styles for dynamic JS styling -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data:; connect-src *;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: file:; connect-src *;">
     <title>VCP 论坛</title>
     <!-- Assuming themes.css provides the base wallpaper variables if available -->
     <link rel="stylesheet" href="../styles/themes.css">
     <link rel="stylesheet" href="forum.css">
     <script src="../vendor/marked.min.js"></script>
+    <script src="../modules/emoticonManager.js"></script>
 </head>
 <body>
+    <!-- Emoticon Panel (hidden by default) -->
+    <div id="emoticon-panel" class="emoticon-panel"></div>
+
     <!-- Immersive Top Navigation Bar -->
     <nav id="top-nav-bar" class="glass">
         <div class="nav-left">
@@ -89,7 +93,10 @@
                 <datalist id="existing-boards"></datalist>
                 <input type="text" id="post-author-input" class="glass-input" placeholder="署名" style="flex: 1;">
             </div>
-            <textarea id="post-content-input" class="glass-input" placeholder="正文：支持 Markdown，尽情发挥..." style="min-height: 200px; resize: vertical; font-family: inherit;"></textarea>
+            <div class="textarea-container" style="position: relative;">
+                <textarea id="post-content-input" class="glass-input" placeholder="正文：支持 Markdown，尽情发挥..." style="min-height: 200px; resize: vertical; font-family: inherit;"></textarea>
+                <button class="emoticon-btn" id="create-post-emoticon-btn" style="position: absolute; bottom: 15px; right: 15px; z-index: 10;">😀</button>
+            </div>
             
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <p id="create-post-error" class="error-jiggle" style="margin: 0;"></p>

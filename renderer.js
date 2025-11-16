@@ -141,6 +141,15 @@ import { setupEventListeners } from './modules/event-listeners.js';
  
  // --- Initialization ---
  document.addEventListener('DOMContentLoaded', async () => {
+    // Initialize Emoticon Manager
+    if (window.emoticonManager) {
+        window.emoticonManager.initialize({
+            emoticonPanel: document.getElementById('emoticonPanel'),
+            messageInput: document.getElementById('messageInput'),
+        });
+    } else {
+        console.error('[RENDERER_INIT] emoticonManager module not found!');
+    }
 
     // 确保在GroupRenderer初始化之前，其容器已准备好
     uiHelperFunctions.prepareGroupSettingsDOM();
@@ -319,7 +328,7 @@ import { setupEventListeners } from './modules/event-listeners.js';
             window.notificationRenderer.updateVCPLogStatus(statusUpdate, vcpLogConnectionStatusDiv);
         }
     });
-    window.electronAPI.onVCPLogMessage((logData, originalRawMessage) => {
+    window.electronAPI.onVCPLogMessage((logData) => {
         if (window.notificationRenderer) {
             const computedStyle = getComputedStyle(document.body);
             const themeColors = {
@@ -330,7 +339,8 @@ import { setupEventListeners } from './modules/event-listeners.js';
                 primaryText: computedStyle.getPropertyValue('--primary-text').trim(),
                 secondaryText: computedStyle.getPropertyValue('--secondary-text').trim()
             };
-            window.notificationRenderer.renderVCPLogNotification(logData, originalRawMessage, notificationsListUl, themeColors);
+            // 修复：只传递一个 logData 参数，第二个参数显式传递 null，以匹配 preload 定义
+            window.notificationRenderer.renderVCPLogNotification(logData, null, notificationsListUl, themeColors);
         }
     });
 
@@ -927,6 +937,15 @@ import { setupEventListeners } from './modules/event-listeners.js';
             filterAgentList: uiHelperFunctions.filterAgentList,
             addNetworkPathInput: uiHelperFunctions.addNetworkPathInput
         });
+
+        // Emoticon panel event listener
+        if (attachFileBtn && window.emoticonManager) {
+            attachFileBtn.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                window.emoticonManager.togglePanel(attachFileBtn);
+            });
+        }
+
         window.topicListManager.setupTopicSearch(); // Ensure this is called after DOM for topic search input is ready
         if(messageInput) uiHelperFunctions.autoResizeTextarea(messageInput);
 
@@ -1411,12 +1430,20 @@ async function loadAndApplyGlobalSettings() {
         document.getElementById('smoothStreamIntervalMs').value = globalSettings.smoothStreamIntervalMs !== undefined ? globalSettings.smoothStreamIntervalMs : 100;
 
 
+        // 管理用户头像的 .no-avatar 类
+        const userAvatarWrapper = userAvatarPreview?.closest('.agent-avatar-wrapper');
         if (globalSettings.userAvatarUrl && userAvatarPreview) {
             userAvatarPreview.src = globalSettings.userAvatarUrl; // Already has timestamp from main
             userAvatarPreview.style.display = 'block';
+            if (userAvatarWrapper) {
+                userAvatarWrapper.classList.remove('no-avatar');
+            }
         } else if (userAvatarPreview) {
             userAvatarPreview.src = '#';
             userAvatarPreview.style.display = 'none';
+            if (userAvatarWrapper) {
+                userAvatarWrapper.classList.add('no-avatar'); // 确保相机图标始终显示
+            }
         }
         if (window.messageRenderer) { // Update messageRenderer with user avatar info
             window.messageRenderer.setUserAvatar(globalSettings.userAvatarUrl);
@@ -1468,9 +1495,13 @@ async function loadAndApplyGlobalSettings() {
         document.getElementById('contextSanitizerDepth').value = globalSettings.contextSanitizerDepth !== undefined ? globalSettings.contextSanitizerDepth : 2;  
         // 同时更新深度容器的显示状态  
         const contextSanitizerDepthContainer = document.getElementById('contextSanitizerDepthContainer');  
-        if (contextSanitizerDepthContainer) {  
-            contextSanitizerDepthContainer.style.display = globalSettings.enableContextSanitizer === true ? 'block' : 'none';  
+        if (contextSanitizerDepthContainer) {
+            contextSanitizerDepthContainer.style.display = globalSettings.enableContextSanitizer === true ? 'block' : 'none';
         }
+
+        // Load AI message button setting
+        document.getElementById('enableAiMessageButtons').checked = globalSettings.enableAiMessageButtons !== false; // Default to true
+
         // Load filter mode setting (migrate from old doNotDisturbLogMode if exists)
         let filterEnabled = globalSettings.filterEnabled;
         if (filterEnabled === undefined) {
@@ -1548,9 +1579,13 @@ let markedInstance;
 if (window.marked && typeof window.marked.Marked === 'function') { // Ensure Marked is a constructor
     try {
         markedInstance = new window.marked.Marked({
-            sanitize: false,
-            gfm: true,
-            breaks: true,
+            gfm: true,              // 启用 GitHub Flavored Markdown
+            tables: true,           // 启用表格支持
+            breaks: false,          // 🟢 不自动将换行符转换为 <br>，保持标准 Markdown 行为
+            pedantic: false,        // 不使用严格的 Markdown 规则
+            sanitize: false,        // 不清理 HTML（允许内嵌 HTML）
+            smartLists: true,       // 使用更智能的列表行为
+            smartypants: false,     // 不使用智能标点符号
             highlight: function(code, lang) {
                 if (window.hljs) {
                     const language = window.hljs.getLanguage(lang) ? lang : 'plaintext';

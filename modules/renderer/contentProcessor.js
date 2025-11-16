@@ -40,12 +40,29 @@ function ensureSpaceAfterTilde(text) {
 
 /**
  * Removes leading whitespace from lines starting with ``` (code block markers).
+ * This only removes indentation from the fence markers themselves, NOT the code content.
  * @param {string} text The input string.
  * @returns {string} The processed string.
  */
 function removeIndentationFromCodeBlockMarkers(text) {
     if (typeof text !== 'string') return text;
-    return text.replace(/^(\s*)(```.*)/gm, '$2');
+    // Only remove indentation from the opening and closing fence markers
+    // Do NOT touch the content between them
+    const lines = text.split('\n');
+    let inCodeBlock = false;
+    
+    return lines.map(line => {
+        const trimmedLine = line.trim();
+        
+        // Check if this is a fence marker
+        if (trimmedLine.startsWith('```')) {
+            inCodeBlock = !inCodeBlock;
+            return trimmedLine; // Remove indentation from fence markers
+        }
+        
+        // Keep original formatting for code content
+        return line;
+    }).join('\n');
 }
 
 /**
@@ -346,8 +363,13 @@ function processAllPreBlocksInContentDiv(contentDiv) {
  * Processes interactive buttons in AI messages
  * @param {HTMLElement} contentDiv The message content element.
  */
-function processInteractiveButtons(contentDiv) {
+function processInteractiveButtons(contentDiv, settings = {}) {
     if (!contentDiv) return;
+
+    // 如果在全局设置中禁用了AI消息按钮，则直接返回
+    if (settings.enableAiMessageButtons === false) {
+        return;
+    }
 
     // Find all button elements
     const buttons = contentDiv.querySelectorAll('button');
@@ -557,7 +579,7 @@ function showErrorNotification(message) {
  * that do not depend on a fully stable DOM tree from complex innerHTML.
  * @param {HTMLElement} contentDiv The message content element.
  */
-function processRenderedContent(contentDiv) {
+function processRenderedContent(contentDiv, settings = {}) {
     if (!contentDiv) return;
 
     // KaTeX rendering
@@ -574,8 +596,8 @@ function processRenderedContent(contentDiv) {
     // Special block formatting (VCP/Diary)
     processAllPreBlocksInContentDiv(contentDiv);
 
-    // Process interactive buttons
-    processInteractiveButtons(contentDiv);
+    // Process interactive buttons, passing settings
+    processInteractiveButtons(contentDiv, settings);
 
     // Apply syntax highlighting to code blocks
     if (window.hljs) {
@@ -657,18 +679,84 @@ function scopeCss(cssString, scopeId) {
 function applyContentProcessors(text) {
     if (typeof text !== 'string') return text;
     
-    // Chain multiple regex replacements for efficiency
-    return text
+    // Apply processors that need special handling first
+    let processedText = text;
+    
+    // Use the proper function for code block markers (preserves content formatting)
+    processedText = removeIndentationFromCodeBlockMarkers(processedText);
+    
+    // Then apply simple regex replacements
+    return processedText
         // ensureNewlineAfterCodeBlock
         .replace(/^(\s*```)(?![\r\n])/gm, '$1\n')
         // ensureSpaceAfterTilde
         .replace(/(^|[^\w/\\=])~(?![\s~])/g, '$1~ ')
-        // removeIndentationFromCodeBlockMarkers
-        .replace(/^(\s*)(```.*)/gm, '$2')
-         // removeSpeakerTags - Simplified regex to remove all occurrences at the start
+        // removeSpeakerTags - Simplified regex to remove all occurrences at the start
         .replace(/^(\[(?:(?!\]:\s).)*的发言\]:\s*)+/g, '')
         // ensureSeparatorBetweenImgAndCode
         .replace(/(<img[^>]+>)\s*(```)/g, '$1\n\n<!-- VCP-Renderer-Separator -->\n\n$2');
+}
+
+
+/**
+ * 智能地移除被错误解析为代码块的行首缩进。
+ * 它会跳过代码围栏 (```) 内部的内容和 Markdown 列表项。
+ * @param {string} text 输入文本。
+ * @returns {string} 处理后的文本。
+ */
+/**
+ * 智能地移除被错误解析为代码块的行首缩进。
+ * 只处理HTML标签的缩进，完全保护代码块和普通文本的格式。
+ * @param {string} text 输入文本。
+ * @returns {string} 处理后的文本。
+ */
+function deIndentMisinterpretedCodeBlocks(text) {
+    if (typeof text !== 'string') return text;
+
+    const lines = text.split('\n');
+    let inFence = false;
+    
+    // 匹配 Markdown 列表标记，例如 *, -, 1.
+    const listRegex = /^\s*([-*]|\d+\.)\s+/;
+    
+    // 匹配可能导致Markdown解析问题的HTML标签
+    const htmlTagRegex = /^\s*<\/?(div|p|img|span|a|h[1-6]|ul|ol|li|table|tr|td|th|section|article|header|footer|nav|aside|main|figure|figcaption|blockquote|pre|code|style|script|button|form|input|textarea|select|label|iframe|video|audio|canvas|svg)[\s>\/]/i;
+
+    // 匹配中文字符开头，用于识别首行缩进的段落
+    const chineseParagraphRegex = /^[\u4e00-\u9fa5]/;
+
+    return lines.map(line => {
+        // 检测代码围栏
+        if (line.trim().startsWith('```')) {
+            inFence = !inFence;
+            // 移除代码围栏标记本身的缩进
+            return line.trimStart();
+        }
+
+        // 如果在代码块内，完全不处理
+        if (inFence) {
+            return line;
+        }
+
+        const trimmedStartLine = line.trimStart();
+        const hasIndentation = line.length > trimmedStartLine.length;
+
+        // 只处理有缩进的行
+        if (hasIndentation) {
+            // 如果是列表项，则不处理
+            if (listRegex.test(line)) {
+                return line;
+            }
+            
+            // 🟢 如果是HTML标签或中文段落，则移除缩进
+            if (htmlTagRegex.test(line) || chineseParagraphRegex.test(trimmedStartLine)) {
+                return trimmedStartLine;
+            }
+        }
+
+        // 其他所有情况，保持原样
+        return line;
+    }).join('\n');
 }
 
 
@@ -680,6 +768,7 @@ export {
     removeSpeakerTags,
     ensureSeparatorBetweenImgAndCode,
     deIndentToolRequestBlocks,
+    deIndentMisinterpretedCodeBlocks,
     processAllPreBlocksInContentDiv,
     processRenderedContent,
     processInteractiveButtons,

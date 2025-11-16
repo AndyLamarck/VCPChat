@@ -202,18 +202,83 @@
             margin-bottom: 8px;
             font-size: 0.9em;
         }
+        .rag-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+        
         .rag-meta span {
             background-color: rgba(255, 255, 255, 0.1);
             color: var(--secondary-text);
             padding: 3px 8px;
             border-radius: 12px;
-            margin-right: 8px;
             font-weight: 500;
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
         .rag-meta .source-rag { background-color: rgba(52, 152, 219, 0.2); color: #5dade2; border-color: #5dade2; }
         .rag-meta .source-time { background-color: rgba(46, 204, 113, 0.2); color: #58d68d; border-color: #58d68d; }
         .rag-meta .date { background-color: rgba(142, 68, 173, 0.2); color: #af7ac5; border-color: #af7ac5; }
+        
+        /* Score评分可视化样式 */
+        .score-container {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .score-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 0.85em;
+            border: 1px solid;
+        }
+        
+        /* Score等级颜色 */
+        .score-badge.excellent {
+            background-color: rgba(76, 175, 80, 0.2);
+            color: #66bb6a;
+            border-color: #66bb6a;
+        }
+        .score-badge.good {
+            background-color: rgba(52, 152, 219, 0.2);
+            color: #5dade2;
+            border-color: #5dade2;
+        }
+        .score-badge.fair {
+            background-color: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+            border-color: #ffc107;
+        }
+        .score-badge.poor {
+            background-color: rgba(244, 67, 54, 0.2);
+            color: #ef5350;
+            border-color: #ef5350;
+        }
+        
+        /* Tag提权后的特殊样式 */
+        .score-badge.boosted {
+            background: linear-gradient(135deg, rgba(255, 193, 7, 0.3) 0%, rgba(255, 152, 0, 0.3) 100%);
+            color: #ffc107;
+            border-color: #ffc107;
+            box-shadow: 0 0 8px rgba(255, 193, 7, 0.3);
+        }
+        
+        .score-badge.boosted::before {
+            content: "⭐";
+            margin-right: 2px;
+        }
+        
+        .score-detail {
+            font-size: 0.75em;
+            color: var(--secondary-text);
+            font-weight: normal;
+        }
 
         /* 元思考链专用样式 */
         .meta-thinking-block {
@@ -434,6 +499,154 @@
         #infoContainer p {
             color: var(--secondary-text);
         }
+
+        /* Animation for new cards */
+        @keyframes slideInFromBottom {
+            from {
+                opacity: 0;
+                transform: translateY(40px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .card-enter-animation {
+            animation: slideInFromBottom 0.5s ease-out forwards;
+        }
+    </style>
+    <style>
+        /* Tag相关样式 */
+        .tag-indicator {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.75em;
+            margin-left: 5px;
+            border: 1px solid #ffc107;
+            display: inline-block;
+        }
+        
+        .matched-tags {
+            margin-top: 8px !important;
+            padding: 12px !important;
+            background: rgba(255, 193, 7, 0.08) !important;
+            border-radius: 8px !important;
+            border-left: 3px solid #ffc107 !important;
+            display: block !important;
+            max-width: 100% !important;
+        }
+        
+        .matched-tags strong {
+            color: #ffc107;
+            font-size: 0.9em;
+            display: block;
+            margin-bottom: 8px;
+        }
+        
+        .tags-list {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 6px !important;
+            margin-bottom: 10px !important;
+        }
+        
+        .tag-item {
+            display: inline-block;
+            background: rgba(255, 193, 7, 0.25);
+            color: #ffc107;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            border: 1px solid rgba(255, 193, 7, 0.5);
+            font-weight: 500;
+        }
+        
+        .tag-boost-info {
+            margin-top: 8px !important;
+            padding-top: 8px !important;
+            border-top: 1px dashed rgba(255, 193, 7, 0.2) !important;
+            font-size: 0.8em !important;
+            color: var(--secondary-text) !important;
+            line-height: 1.2 !important;
+            display: block !important;
+            white-space: normal !important;
+            overflow: visible !important;
+        }
+        
+        .tag-boost-item {
+            display: inline !important;
+            margin-right: 12px !important;
+            white-space: nowrap !important;
+            vertical-align: baseline !important;
+            float: none !important;
+        }
+        
+        .tag-boost-item:last-child {
+            margin-right: 0 !important;
+        }
+        
+        .tag-boost-item .boost-label {
+            color: var(--secondary-text) !important;
+            margin-right: 4px !important;
+            display: inline !important;
+        }
+        
+        .tag-boost-item .boost-value {
+            color: #ffc107 !important;
+            font-weight: 600 !important;
+            display: inline !important;
+        }
+        
+        /* AI Memo Retrieval Styles */
+        .ai-memo-block {
+            background: rgba(26, 188, 156, 0.05);
+            backdrop-filter: blur(12px) saturate(120%);
+            -webkit-backdrop-filter: blur(12px) saturate(120%);
+            border: 1px solid rgba(26, 188, 156, 0.3);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            padding: 15px 20px;
+            box-shadow: 0 4px 16px rgba(26, 188, 156, 0.1);
+            transition: all 0.3s ease;
+        }
+        .ai-memo-block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(26, 188, 156, 0.2);
+        }
+        .ai-memo-header h3 {
+            margin: 0 0 8px 0;
+            color: #1abc9c;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .ai-memo-header p { margin: 2px 0; font-size: 0.9em; color: var(--secondary-text); }
+        .ai-memo-header strong { color: var(--primary-text); }
+        .ai-memo-content {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px dashed rgba(26, 188, 156, 0.2);
+        }
+        .ai-memo-details-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .ai-memo-details-item {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .ai-memo-details-item strong {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 1em;
+            color: var(--highlight-text);
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
@@ -549,6 +762,15 @@
             connectionStatusDiv.textContent = `连接状态：${message}`;
         }
 
+        function addAnimatedBlock(block) {
+            infoContainer.prepend(block);
+            // Use requestAnimationFrame to ensure the element is in the DOM before adding the class,
+            // which allows the CSS animation to trigger correctly.
+            requestAnimationFrame(() => {
+                block.classList.add('card-enter-animation');
+            });
+        }
+
         function displayRagInfo(data) {
             if (infoContainer.firstElementChild && infoContainer.firstElementChild.tagName === 'P') {
                 infoContainer.innerHTML = '';
@@ -565,9 +787,15 @@
                 displayMetaThinkingChain(data);
                 return;
             }
+            
+            // 检查是否为 AI Memo Retrieval 数据
+            if (data.type === 'AI_MEMO_RETRIEVAL') {
+                displayAiMemoRetrieval(data);
+                return;
+            }
 
-            const block = document.createElement('div');
-            block.className = 'rag-block';
+             const block = document.createElement('div');
+             block.className = 'rag-block';
 
             const header = document.createElement('div');
             header.className = 'rag-block-header';
@@ -581,6 +809,11 @@
                 ? `<button class="toggle-button" style="margin-left: 10px;" onclick="toggleQueryText(this)">展开</button>`
                 : '';
 
+            // 构建Tag模式信息
+            const tagModeInfo = data.useTagMemo
+                ? ` | <strong>TagMemo:</strong> <span class="tag-indicator">已启用 (权重: ${data.tagWeight || 'N/A'})</span>`
+                : '';
+            
             header.innerHTML = `
                 <h3>知识库: <strong>${data.dbName}</strong></h3>
                 <p>查询: <em class="query-content">${queryDisplay}</em> ${toggleButtonHTML}</p>
@@ -588,10 +821,45 @@
                     <strong>K:</strong> ${data.k} |
                     <strong>Time:</strong> ${data.useTime} |
                     <strong>Group:</strong> ${data.useGroup} |
-                    <strong>Rerank:</strong> ${data.useRerank} |
+                    <strong>Rerank:</strong> ${data.useRerank}${tagModeInfo} |
                     <strong>召回数量:</strong> ${data.results.length}
                 </p>
             `;
+            
+            // 如果启用TagMemo且有tagStats，显示统计信息
+            if (data.useTagMemo && data.tagStats) {
+                const stats = data.tagStats;
+                const statsDiv = document.createElement('div');
+                statsDiv.style.cssText = `
+                    margin-top: 10px;
+                    padding: 10px;
+                    background: rgba(255, 193, 7, 0.08);
+                    border-radius: 8px;
+                    border: 1px solid rgba(255, 193, 7, 0.3);
+                    font-size: 0.85em;
+                `;
+                
+                let tagsHTML = '';
+                if (stats.uniqueMatchedTags && stats.uniqueMatchedTags.length > 0) {
+                    tagsHTML = '<div style="margin-top: 5px;"><strong style="color: #ffc107;">匹配到的所有标签:</strong> ';
+                    stats.uniqueMatchedTags.forEach(tag => {
+                        tagsHTML += `<span class="tag-item" style="margin: 2px 3px;">${tag}</span>`;
+                    });
+                    tagsHTML += '</div>';
+                }
+                
+                statsDiv.innerHTML = `
+                    <strong style="color: #ffc107;">📊 Tag统计概览</strong>
+                    <div style="margin-top: 5px; color: var(--secondary-text);">
+                        总匹配次数: <span style="color: #ffc107; font-weight: 600;">${stats.totalTagMatches || 0}</span> |
+                        命中结果数: <span style="color: #ffc107; font-weight: 600;">${stats.resultsWithTags || 0}/${data.results.length}</span> |
+                        平均提权: <span style="color: #ffc107; font-weight: 600;">${stats.avgBoostFactor || '1.0'}</span>
+                    </div>
+                    ${tagsHTML}
+                `;
+                header.appendChild(statsDiv);
+            }
+            
             block.appendChild(header);
 
             data.results.forEach(r => {
@@ -603,11 +871,53 @@
                 
                 const meta = document.createElement('div');
                 meta.className = 'rag-meta';
+                
+                // 构建带可视化的分数显示
+                let scoreHTML = '';
+                if (r.score !== undefined && r.score !== null) {
+                    const score = r.score;
+                    const originalScore = r.originalScore;
+                    const isBoosted = data.useTagMemo && originalScore !== undefined && originalScore !== score;
+                    
+                    // 确定评分等级和颜色
+                    let scoreClass = 'poor';
+                    if (score >= 0.8) scoreClass = 'excellent';
+                    else if (score >= 0.6) scoreClass = 'good';
+                    else if (score >= 0.4) scoreClass = 'fair';
+                    
+                    // 如果是Tag提权的结果，使用特殊样式
+                    if (isBoosted) scoreClass = 'boosted';
+                    
+                    const scoreContainer = document.createElement('div');
+                    scoreContainer.className = 'score-container';
+                    
+                    const scoreBadge = document.createElement('span');
+                    scoreBadge.className = `score-badge ${scoreClass}`;
+                    scoreBadge.textContent = `Score: ${score.toFixed(3)}`;
+                    scoreContainer.appendChild(scoreBadge);
+                    
+                    if (isBoosted) {
+                        const scoreDetail = document.createElement('span');
+                        scoreDetail.className = 'score-detail';
+                        scoreDetail.textContent = `原始: ${originalScore.toFixed(3)}`;
+                        scoreContainer.appendChild(scoreDetail);
+                    }
+                    
+                    scoreHTML = scoreContainer.outerHTML;
+                }
+                
+                // 先添加来源和日期标签
                 meta.innerHTML = `
                     <span class="source-${r.source || 'unknown'}">来源: ${r.source || 'N/A'}</span>
                     ${r.date ? `<span class="date">日期: ${r.date}</span>` : ''}
-                    ${r.score ? `<span>Score: ${r.score.toFixed(3)}</span>` : ''}
                 `;
+                
+                // 如果有score，将其作为DOM元素添加
+                if (scoreHTML) {
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = scoreHTML;
+                    meta.appendChild(tempDiv.firstChild);
+                }
 
                 const toggleBtn = document.createElement('button');
                 toggleBtn.className = 'toggle-button';
@@ -631,12 +941,54 @@
                 content.appendChild(snippet);
                 content.appendChild(fullText);
                 
+                // 如果启用了TagMemo并且有匹配的Tags，显示Tag信息
+                if (data.useTagMemo && r.matchedTags && r.matchedTags.length > 0) {
+                    const tagInfo = document.createElement('div');
+                    tagInfo.className = 'matched-tags';
+                    
+                    // 标题
+                    const title = document.createElement('strong');
+                    title.textContent = '🏷️ 匹配标签';
+                    tagInfo.appendChild(title);
+                    
+                    // Tags列表
+                    const tagsList = document.createElement('div');
+                    tagsList.className = 'tags-list';
+                    r.matchedTags.forEach(tag => {
+                        const tagSpan = document.createElement('span');
+                        tagSpan.className = 'tag-item';
+                        tagSpan.textContent = tag;
+                        tagsList.appendChild(tagSpan);
+                    });
+                    tagInfo.appendChild(tagsList);
+                    
+                    // Tag提权信息 - 紧凑单行布局
+                    const boostInfo = document.createElement('div');
+                    boostInfo.className = 'tag-boost-info';
+                    boostInfo.innerHTML = `
+                        <span class="tag-boost-item">
+                            <span class="boost-label">Tag匹配得分:</span>
+                            <span class="boost-value">${r.tagMatchScore?.toFixed(3) || 'N/A'}</span>
+                        </span>
+                        <span class="tag-boost-item">
+                            <span class="boost-label">匹配数量:</span>
+                            <span class="boost-value">${r.tagMatchCount || 0}</span>
+                        </span>
+                        <span class="tag-boost-item">
+                            <span class="boost-label">提权倍数:</span>
+                            <span class="boost-value">${r.boostFactor?.toFixed(4) || '1.0000'}×</span>
+                        </span>
+                    `;
+                    tagInfo.appendChild(boostInfo);
+                    content.appendChild(tagInfo);
+                }
+                
                 item.appendChild(itemHeader);
                 item.appendChild(content);
                 block.appendChild(item);
             });
 
-            infoContainer.prepend(block);
+            addAnimatedBlock(block);
         }
 
         function toggleQueryText(button) {
@@ -828,7 +1180,7 @@
                 });
             }
 
-            infoContainer.prepend(block);
+            addAnimatedBlock(block);
         }
 
         function toggleResultText(button) {
@@ -936,11 +1288,120 @@
             contentDiv.appendChild(responseDiv);
 
             block.appendChild(contentDiv);
-            infoContainer.prepend(block);
+            addAnimatedBlock(block);
         }
 
         function clearLogs() {
             infoContainer.innerHTML = '<p style="text-align:center; color:#999;">日志已清空。</p>';
+        }
+    </script>
+    <script>
+        function displayAiMemoRetrieval(data) {
+            const block = document.createElement('div');
+            block.className = 'ai-memo-block';
+
+            const header = document.createElement('div');
+            header.className = 'ai-memo-header';
+
+            // 显示日记本列表
+            const dbNamesDisplay = data.dbNames && data.dbNames.length > 0
+                ? data.dbNames.join(', ')
+                : '未知';
+
+            const queryText = data.query || '';
+            const needsToggleQuery = queryText.length > 150;
+            const renderedQuery = marked.parse(queryText);
+            const queryDisplay = needsToggleQuery
+                ? `<span class="snippet">${queryText.substring(0, 150)}...</span><div class="full-text" style="display:none;">${renderedQuery}</div>`
+                : `<div>${renderedQuery}</div>`;
+            const toggleButtonQueryHTML = needsToggleQuery
+                ? `<button class="toggle-button" style="margin-left: 10px;" onclick="toggleQueryText(this)">展开</button>`
+                : '';
+
+            header.innerHTML = `
+                <h3>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle;">
+                        <path d="M18.36 5.64C16.96 4.24 15.06 3.5 13 3.5C10.94 3.5 9.04 4.24 7.64 5.64C6.24 7.04 5.5 8.94 5.5 11H18.5C18.5 8.94 17.76 7.04 16.36 5.64Z" fill="#1abc9c" fill-opacity="0.3"/>
+                        <path d="M5.5 11V12.5C5.5 15.26 7.74 17.5 10.5 17.5V20.5H13.5V17.5C16.26 17.5 18.5 15.26 18.5 12.5V11H5.5Z" fill="#1abc9c"/>
+                    </svg>
+                    AI 聚合记忆检索
+                </h3>
+                <p><strong>日记本:</strong> ${dbNamesDisplay} (共 ${data.diaryCount || 0} 个)</p>
+                <p>查询: <em class="query-content">${queryDisplay}</em> ${toggleButtonQueryHTML}</p>
+                <p><strong>模式:</strong> ${data.mode}${data.mode === 'aggregated_batched' ? ` | <strong>批次数:</strong> ${data.batchCount || 0}` : ''}</p>
+            `;
+            block.appendChild(header);
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'ai-memo-content';
+            
+            const detailsGrid = document.createElement('div');
+            detailsGrid.className = 'ai-memo-details-grid';
+
+            // 根据模式显示不同内容
+            if (data.mode === 'aggregated_single') {
+                const rawResponse = data.rawResponse || '';
+                const needsToggleRaw = rawResponse.length > 200;
+                const renderedRaw = marked.parse(rawResponse);
+                const rawDisplay = needsToggleRaw
+                    ? `<div class="snippet">${rawResponse.substring(0, 200)}...</div><div class="full-text" style="display:none;">${renderedRaw}</div><button class="toggle-button" style="margin-top: 8px;" onclick="toggleAiMemoText(this)">展开</button>`
+                    : `<div>${renderedRaw}</div>`;
+
+                const extractedMemories = data.extractedMemories || '';
+                const needsToggleMem = extractedMemories.length > 200;
+                const renderedMem = marked.parse(extractedMemories);
+                const memDisplay = needsToggleMem
+                    ? `<div class="snippet">${extractedMemories.substring(0, 200)}...</div><div class="full-text" style="display:none;">${renderedMem}</div><button class="toggle-button" style="margin-top: 8px;" onclick="toggleAiMemoText(this)">展开</button>`
+                    : `<div>${renderedMem}</div>`;
+
+                detailsGrid.innerHTML = `
+                    <div class="ai-memo-details-item">
+                        <strong>AI 原始响应</strong>
+                        <div class="rag-content">${rawDisplay}</div>
+                    </div>
+                    <div class="ai-memo-details-item">
+                        <strong>提取的记忆</strong>
+                        <div class="rag-content">${memDisplay}</div>
+                    </div>
+                `;
+            } else if (data.mode === 'aggregated_batched') {
+                const extractedMemories = data.extractedMemories || '';
+                const needsToggleMem = extractedMemories.length > 200;
+                const renderedMem = marked.parse(extractedMemories);
+                const memDisplay = needsToggleMem
+                    ? `<div class="snippet">${extractedMemories.substring(0, 200)}...</div><div class="full-text" style="display:none;">${renderedMem}</div><button class="toggle-button" style="margin-top: 8px;" onclick="toggleAiMemoText(this)">展开</button>`
+                    : `<div>${renderedMem}</div>`;
+
+                detailsGrid.innerHTML = `
+                    <div class="ai-memo-details-item">
+                        <strong>提取的记忆</strong>
+                        <div class="rag-content">${memDisplay}</div>
+                    </div>
+                `;
+            }
+            
+            contentDiv.appendChild(detailsGrid);
+            block.appendChild(contentDiv);
+            addAnimatedBlock(block);
+        }
+
+        function toggleAiMemoText(button) {
+            const parent = button.parentElement;
+            const snippet = parent.querySelector('.snippet');
+            const fullText = parent.querySelector('.full-text');
+            
+            if (!snippet || !fullText) return;
+
+            const isCollapsed = fullText.style.display === 'none';
+            if (isCollapsed) {
+                fullText.style.display = 'block';
+                snippet.style.display = 'none';
+                button.textContent = '收起';
+            } else {
+                fullText.style.display = 'none';
+                snippet.style.display = 'block';
+                button.textContent = '展开';
+            }
         }
     </script>
 </body>
