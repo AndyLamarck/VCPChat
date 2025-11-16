@@ -6,7 +6,7 @@ const DIARY_RENDER_DEBOUNCE_DELAY = 1000; // ms, potentially longer for diary if
 const enhancedRenderDebounceTimers = new WeakMap(); // For debouncing prettify calls
 
 import { avatarColorCache, getDominantAvatarColor } from './renderer/colorUtils.js';
-import { initializeImageHandler, setContentAndProcessImages, clearImageState, clearAllImageStates } from './renderer/imageHandler.js';
+import { initializeImageHandler, setContentAndProcessImages } from './renderer/imageHandler.js';
 import { processAnimationsInContent, cleanupAnimationsInContent } from './renderer/animation.js';
 import { createMessageSkeleton } from './renderer/domBuilder.js';
 import * as streamManager from './renderer/streamManager.js';
@@ -500,12 +500,14 @@ function deIndentHtml(text) {
     return lines.map(line => {
         if (line.trim().startsWith('```')) {
             inFence = !inFence;
+            return line;
         }
-        // If we are not in a fenced block, and a line is indented and looks like an HTML tag,
-        // remove the leading whitespace. This is the key fix.
-        // The regex now specifically targets indented `<p>` and `<div>` tags,
-        // which are common block-level elements that can be misinterpreted as code blocks.
-        // It is case-insensitive and handles tags spanning multiple lines.
+        
+        // 🟢 新增：如果行内包含 <img>，不要拆分它
+        if (!inFence && line.includes('<img')) {
+            return line; // 保持原样
+        }
+        
         if (!inFence && /^\s+<(!|[a-zA-Z])/.test(line)) {
             return line.trimStart();
         }
@@ -573,6 +575,11 @@ function preprocessFullContent(text, settings = {}, messageRole = 'assistant', d
         return `<div class="mermaid-placeholder" data-mermaid-code="${encodedCode}"></div>`;
     });
 
+    // 🔴 关键修复：在提取代码块之前先处理缩进
+    // 这样 deIndentMisinterpretedCodeBlocks 才能正确识别代码围栏
+    text = contentProcessor.deIndentMisinterpretedCodeBlocks(text);
+    text = deIndentHtml(text);
+    
     // 保护代码块（优化：只在需要时创建 Map）
     let codeBlockMap = null;
     let placeholderId = 0;
@@ -591,7 +598,6 @@ function preprocessFullContent(text, settings = {}, messageRole = 'assistant', d
     }
 
     // The order of the remaining operations is critical.
-    text = deIndentHtml(text);
     text = contentProcessor.deIndentToolRequestBlocks(text);
     text = transformSpecialBlocks(text);
     text = ensureHtmlFenced(text);
@@ -722,7 +728,6 @@ function removeMessageById(messageId, saveHistory = false) {
             }
         }
     }
-    clearImageState(messageId); // Clean up image state for the deleted message
 }
 
 function clearChat() {
@@ -738,7 +743,6 @@ function clearChat() {
         mainRendererReferences.chatMessagesDiv.innerHTML = '';
     }
     mainRendererReferences.currentChatHistoryRef.set([]); // Clear the history array via its ref
-    clearAllImageStates(); // Clear all image loading states
 }
 
 
@@ -833,13 +837,18 @@ function initializeMessageRenderer(refs) {
 
     contentProcessor.initializeContentProcessor(mainRendererReferences);
 
+    const wrappedProcessRenderedContent = (contentDiv) => {
+        const globalSettings = mainRendererReferences.globalSettingsRef.get();
+        contentProcessor.processRenderedContent(contentDiv, globalSettings);
+    };
+
     contextMenu.initializeContextMenu(mainRendererReferences, {
         removeMessageById: removeMessageById,
         finalizeStreamedMessage: finalizeStreamedMessage,
         renderMessage: renderMessage,
         startStreamingMessage: startStreamingMessage,
         setContentAndProcessImages: setContentAndProcessImages,
-        processRenderedContent: contentProcessor.processRenderedContent,
+        processRenderedContent: wrappedProcessRenderedContent,
         runTextHighlights: contentProcessor.highlightAllPatternsInMessage,
         preprocessFullContent: preprocessFullContent,
         renderAttachments: renderAttachments,
@@ -864,13 +873,14 @@ function initializeMessageRenderer(refs) {
         renderMessage: renderMessage,
         showContextMenu: contextMenu.showContextMenu,
         setContentAndProcessImages: setContentAndProcessImages,
-        processRenderedContent: contentProcessor.processRenderedContent,
+        processRenderedContent: wrappedProcessRenderedContent,
         runTextHighlights: contentProcessor.highlightAllPatternsInMessage,
         preprocessFullContent: preprocessFullContent,
         removeSpeakerTags: contentProcessor.removeSpeakerTags,
         ensureNewlineAfterCodeBlock: contentProcessor.ensureNewlineAfterCodeBlock,
         ensureSpaceAfterTilde: contentProcessor.ensureSpaceAfterTilde,
         removeIndentationFromCodeBlockMarkers: contentProcessor.removeIndentationFromCodeBlockMarkers,
+        deIndentMisinterpretedCodeBlocks: contentProcessor.deIndentMisinterpretedCodeBlocks, // 🟢 传递新函数
         ensureSeparatorBetweenImgAndCode: contentProcessor.ensureSeparatorBetweenImgAndCode,
         processAnimationsInContent: processAnimationsInContent,
         emoticonUrlFixer: emoticonUrlFixer, // 🟢 Pass emoticon fixer for live updates
@@ -1125,7 +1135,7 @@ async function renderMessage(message, isInitialLoad = false, appendToDom = true)
                 // Process images, attachments, and synchronous content first.
                 setContentAndProcessImages(contentDiv, finalHtml, message.id);
                 renderAttachments(message, contentDiv);
-                contentProcessor.processRenderedContent(contentDiv);
+                contentProcessor.processRenderedContent(contentDiv, globalSettings);
                 await renderMermaidDiagrams(contentDiv); // Render mermaid diagrams
 
                 // Defer TreeWalker-based highlighters with a hardcoded delay to ensure the DOM is stable.
@@ -1435,7 +1445,7 @@ async function renderFullMessage(messageId, fullContent, agentName, agentId) {
 
     // Apply post-processing in two steps
     // Step 1: Synchronous processing
-    contentProcessor.processRenderedContent(contentDiv);
+    contentProcessor.processRenderedContent(contentDiv, globalSettings);
     await renderMermaidDiagrams(contentDiv);
 
     // Step 2: Asynchronous, deferred highlighting for DOM stability with a hardcoded delay
@@ -1485,7 +1495,7 @@ function updateMessageContent(messageId, newContent) {
     }
 
     // 3. Synchronous processing (KaTeX, buttons, etc.)
-    contentProcessor.processRenderedContent(contentDiv);
+    contentProcessor.processRenderedContent(contentDiv, globalSettings);
     renderMermaidDiagrams(contentDiv); // Fire-and-forget async rendering
 
     // 4. Asynchronous, deferred highlighting for DOM stability

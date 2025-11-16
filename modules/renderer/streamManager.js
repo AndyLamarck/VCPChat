@@ -5,6 +5,7 @@ const streamingChunkQueues = new Map(); // messageId -> array of original chunk 
 const streamingTimers = new Map();      // messageId -> intervalId
 const accumulatedStreamText = new Map(); // messageId -> string
 let activeStreamingMessageId = null; // Track the currently active streaming message
+const elementContentLengthCache = new Map(); // 跟踪每个元素的内容长度
 
 // --- DOM Cache ---
 const messageDomCache = new Map(); // messageId -> { messageItem, contentDiv }
@@ -190,14 +191,20 @@ function applyStreamingPreprocessors(text) {
     SPEAKER_TAG_REGEX.lastIndex = 0;
     NEWLINE_AFTER_CODE_REGEX.lastIndex = 0;
     SPACE_AFTER_TILDE_REGEX.lastIndex = 0;
-    CODE_MARKER_INDENT_REGEX.lastIndex = 0;
     IMG_CODE_SEPARATOR_REGEX.lastIndex = 0;
     
-    return text
+    let processedText = text;
+
+    // 🟢 新增：在流式处理中也修复错误的缩进代码块
+    // 🟢 使用精细化的缩进处理，只处理HTML标签
+    if (refs.deIndentMisinterpretedCodeBlocks) {
+        processedText = refs.deIndentMisinterpretedCodeBlocks(processedText);
+    }
+    
+    return processedText
         .replace(SPEAKER_TAG_REGEX, '')
         .replace(NEWLINE_AFTER_CODE_REGEX, '$1\n')
         .replace(SPACE_AFTER_TILDE_REGEX, '$1~ ')
-        .replace(CODE_MARKER_INDENT_REGEX, '$2')
         .replace(IMG_CODE_SEPARATOR_REGEX, '$1\n\n<!-- VCP-Renderer-Separator -->\n\n$2');
 }
 
@@ -309,6 +316,25 @@ function renderStreamFrame(messageId) {
                     return false;
                 }
                 
+                // 🟢 检测块级元素的显著内容增长
+                if (/^(P|DIV|UL|OL|PRE|BLOCKQUOTE|H[1-6])$/.test(fromEl.tagName)) {
+                    const oldLength = elementContentLengthCache.get(fromEl) || fromEl.textContent.length;
+                    const newLength = toEl.textContent.length;
+                    const lengthDiff = newLength - oldLength;
+                    
+                    // 如果内容增长超过阈值（比如20个字符），触发微动画
+                    if (lengthDiff > 20) {
+                        // 使用脉冲动画而不是滑入动画
+                        fromEl.classList.add('vcp-stream-content-pulse');
+                        setTimeout(() => {
+                            fromEl.classList.remove('vcp-stream-content-pulse');
+                        }, 300);
+                    }
+                    
+                    // 更新缓存
+                    elementContentLengthCache.set(fromEl, newLength);
+                }
+                
                 // 🟢 保留按钮状态
                 if (fromEl.tagName === 'BUTTON' && fromEl.dataset.vcpInteractive === 'true') {
                     if (fromEl.disabled) {
@@ -366,6 +392,23 @@ function renderStreamFrame(messageId) {
                     return false;
                 }
                 return true;
+            },
+            
+            onNodeAdded: function(node) {
+                // Animate block-level elements as they are added to the DOM
+                if (node.nodeType === 1 && /^(P|DIV|UL|OL|PRE|BLOCKQUOTE|H[1-6]|TABLE|FIGURE)$/.test(node.tagName)) {
+                    // 新节点使用滑入动画
+                    node.classList.add('vcp-stream-element-fade-in');
+                    
+                    // 初始化长度缓存
+                    elementContentLengthCache.set(node, node.textContent.length);
+                    
+                    // Clean up the class after the animation completes to prevent re-triggering
+                    node.addEventListener('animationend', () => {
+                        node.classList.remove('vcp-stream-element-fade-in');
+                    }, { once: true });
+                }
+                return node;
             }
         });
     } else {
