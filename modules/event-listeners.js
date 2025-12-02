@@ -21,7 +21,7 @@ export function setupEventListeners(deps) {
         refs,
 
         // Modules and helper functions
-        uiHelperFunctions, chatManager, itemListManager, settingsManager, uiManager,
+        uiHelperFunctions, chatManager, itemListManager, settingsManager, uiManager, topicListManager,
         getCroppedFile, setCroppedFile, updateAttachmentPreview, filterAgentList,
         addNetworkPathInput
     } = deps;
@@ -730,6 +730,11 @@ export function setupEventListeners(deps) {
                 if (chatManager && chatManager.selectTopic) {
                     await chatManager.selectTopic(result.topicId);
                 }
+
+                // 关键修复：在切换话题后，强制刷新话题列表UI
+                if (topicListManager && topicListManager.loadTopicList) {
+                    await topicListManager.loadTopicList();
+                }
                 
                 uiHelperFunctions.showToastNotification(
                     locked ? '已创建新话题（已锁定）' : '已创建新话题（未锁定，AI可查看）',
@@ -932,7 +937,7 @@ export function setupEventListeners(deps) {
                 }
                 
                 // 显示操作提示
-                uiHelperFunctions.showToastNotification(`侧边栏已${isActive ? '显示' : '隐藏'}`, 'info');
+                // uiHelperFunctions.showToastNotification(`侧边栏已${isActive ? '显示' : '隐藏'}`, 'info');
             }
         });
     }
