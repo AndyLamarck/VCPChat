@@ -484,16 +484,20 @@ function toggleEditMode(messageItem, message) {
             textToDisplay = '[内容错误]';
         }
         
-        const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(textToDisplay));
-        contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
-        contextMenuDependencies.processRenderedContent(contentDiv);
-
-        // Re-run highlights to restore quotes, bolding, etc., which was missing.
-        setTimeout(() => {
-            if (contentDiv && contentDiv.isConnected) {
-                contextMenuDependencies.runTextHighlights(contentDiv);
-            }
-        }, 0);
+        // 🟢 修复：使用 updateMessageContent 确保正则规则被应用
+        if (contextMenuDependencies.updateMessageContent) {
+            contextMenuDependencies.updateMessageContent(message.id, textToDisplay);
+        } else {
+            // Fallback for safety, though updateMessageContent should be available now
+            const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(textToDisplay));
+            contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
+            contextMenuDependencies.processRenderedContent(contentDiv);
+            setTimeout(() => {
+                if (contentDiv && contentDiv.isConnected) {
+                    contextMenuDependencies.runTextHighlights(contentDiv);
+                }
+            }, 0);
+        }
 
         messageItem.classList.remove('message-item-editing');
         existingTextarea.remove();
@@ -591,10 +595,16 @@ function toggleEditMode(messageItem, message) {
                 // 🔧 保存成功后更新UI
                 mainRefs.currentChatHistoryRef.set([...currentChatHistoryArray]);
                 
-                const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(newContent));
-                contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
-                contextMenuDependencies.processRenderedContent(contentDiv);
-                contextMenuDependencies.renderAttachments(message, contentDiv);
+                // 🟢 修复：使用 updateMessageContent 确保正则规则被应用
+                if (contextMenuDependencies.updateMessageContent) {
+                    contextMenuDependencies.updateMessageContent(message.id, newContent);
+                } else {
+                    // Fallback for safety
+                    const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(newContent));
+                    contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
+                    contextMenuDependencies.processRenderedContent(contentDiv);
+                    contextMenuDependencies.renderAttachments(message, contentDiv);
+                }
                 
                 // 🔧 重新启动文件监控
                 if (electronAPI.watcherStart && currentSelectedItemVal.config?.agentDataPath) {
@@ -891,6 +901,7 @@ async function handleRegenerateResponse(originalAssistantMessage) {
             model: agentConfig.model,
             temperature: parseFloat(agentConfig.temperature),
             max_tokens: agentConfig.maxOutputTokens ? parseInt(agentConfig.maxOutputTokens) : undefined,
+            contextTokenLimit: agentConfig.contextTokenLimit ? parseInt(agentConfig.contextTokenLimit) : undefined,
             top_p: agentConfig.top_p ? parseFloat(agentConfig.top_p) : undefined,
             top_k: agentConfig.top_k ? parseInt(agentConfig.top_k) : undefined,
             stream: agentConfig.streamOutput === true || String(agentConfig.streamOutput) === 'true'
