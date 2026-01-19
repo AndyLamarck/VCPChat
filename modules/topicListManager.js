@@ -49,18 +49,8 @@ window.topicListManager = (() => {
         // 过滤掉系统消息
         const nonSystemMessages = history.filter(msg => msg.role !== 'system');
         
-        if (nonSystemMessages.length === 0) {
-            return true; // 没有用户消息
-        }
-        
-        // 检查倒数第二条消息（非系统消息）是否为用户消息
-        if (nonSystemMessages.length >= 2) {
-            const secondLast = nonSystemMessages[nonSystemMessages.length - 2];
-            return secondLast.role !== 'user';
-        }
-        
-        // 只有一条非系统消息
-        return nonSystemMessages[0].role !== 'user';
+        // 必须有且只有一条消息，且该消息是 AI 回复
+        return nonSystemMessages.length === 1 && nonSystemMessages[0].role === 'assistant';
     }
 
     /**
@@ -69,18 +59,7 @@ window.topicListManager = (() => {
      * @returns {number}
      */
     function countUnreadMessages(history) {
-        // 从最后一条消息开始，向前计数直到遇到用户消息
-        let count = 0;
-        const nonSystemMessages = history.filter(msg => msg.role !== 'system');
-        
-        for (let i = nonSystemMessages.length - 1; i >= 0; i--) {
-            if (nonSystemMessages[i].role === 'user') {
-                break;
-            }
-            count++;
-        }
-        
-        return count;
+        return shouldActivateCount(history) ? 1 : 0;
     }
 
     /**
@@ -90,18 +69,15 @@ window.topicListManager = (() => {
      * @returns {number} - 未读消息数，-1 表示仅显示小点
      */
     function calculateTopicUnreadCount(topic, history) {
-        // 如果话题被标记为未读，但未满足计数条件，返回 -1 表示仅显示小点
-        if (topic.unread === true) {
-            // 检查是否满足计数条件
-            if (topic.locked === false && shouldActivateCount(history)) {
-                return countUnreadMessages(history);
-            }
-            return -1; // 仅显示小点，不显示数字
+        // 优先检查自动计数条件（AI回复了但用户没回）
+        if (shouldActivateCount(history)) {
+            const count = countUnreadMessages(history);
+            if (count > 0) return count;
         }
-        
-        // 如果话题未标记为未读，检查是否满足自动计数条件
-        if (topic.locked === false && shouldActivateCount(history)) {
-            return countUnreadMessages(history);
+
+        // 如果不满足自动计数条件，但被手动标记为未读，则显示小点
+        if (topic.unread === true) {
+            return -1; // 仅显示小点，不显示数字
         }
         
         return 0; // 不显示
@@ -207,86 +183,113 @@ window.topicListManager = (() => {
             } else {
                 topicListUl.innerHTML = '';
                 const currentTopicId = currentTopicIdRef.get();
-                for (const topic of topicsToProcess) {
-                    const li = document.createElement('li');
-                    li.classList.add('topic-item');
-                    li.dataset.itemId = currentSelectedItem.id;
-                    li.dataset.itemType = currentSelectedItem.type;
-                    li.dataset.topicId = topic.id;
-                    const isCurrentActiveTopic = topic.id === currentTopicId;
-                    li.classList.toggle('active', isCurrentActiveTopic);
-                    li.classList.toggle('active-topic-glowing', isCurrentActiveTopic);
+                
+                // --- 优化：分批渲染话题列表 ---
+                const BATCH_SIZE = 20;
+                let currentIndex = 0;
 
-                    const avatarImg = document.createElement('img');
-                    avatarImg.classList.add('avatar');
-                    avatarImg.src = currentSelectedItem.avatarUrl ? `${currentSelectedItem.avatarUrl}${currentSelectedItem.avatarUrl.includes('?') ? '&' : '?'}t=${Date.now()}` : (currentSelectedItem.type === 'group' ? 'assets/default_group_avatar.png' : 'assets/default_avatar.png');
-                    avatarImg.alt = `${currentSelectedItem.name} - ${topic.name}`;
-                    avatarImg.onerror = () => { avatarImg.src = (currentSelectedItem.type === 'group' ? 'assets/default_group_avatar.png' : 'assets/default_avatar.png'); };
-
-                    const topicTitleDisplay = document.createElement('span');
-                    topicTitleDisplay.classList.add('topic-title-display');
-                    topicTitleDisplay.textContent = topic.name || `话题 ${topic.id}`;
-
-                    const messageCountSpan = document.createElement('span');
-                    messageCountSpan.classList.add('message-count');
-                    messageCountSpan.textContent = '...';
-
-                    li.appendChild(avatarImg);
+                const renderBatch = () => {
+                    const fragment = document.createDocumentFragment();
+                    const end = Math.min(currentIndex + BATCH_SIZE, topicsToProcess.length);
                     
-                    // Part C: 添加未锁定指示器
-                    if (topic.locked === false) {
-                        const unlockedIndicator = document.createElement('span');
-                        unlockedIndicator.classList.add('unlocked-indicator');
-                        unlockedIndicator.textContent = 'unlocked';
-                        unlockedIndicator.title = 'AI可以查看和回复此话题';
-                        li.appendChild(unlockedIndicator);
-                    }
-                    
-                    li.appendChild(topicTitleDisplay);
-                    li.appendChild(messageCountSpan);
+                    for (; currentIndex < end; currentIndex++) {
+                        const topic = topicsToProcess[currentIndex];
+                        const li = document.createElement('li');
+                        li.classList.add('topic-item');
+                        li.dataset.itemId = currentSelectedItem.id;
+                        li.dataset.itemType = currentSelectedItem.type;
+                        li.dataset.topicId = topic.id;
+                        const isCurrentActiveTopic = topic.id === currentTopicId;
+                        li.classList.toggle('active', isCurrentActiveTopic);
+                        li.classList.toggle('active-topic-glowing', isCurrentActiveTopic);
 
-                    let historyPromise;
-                    if (currentSelectedItem.type === 'agent') {
-                        historyPromise = electronAPI.getChatHistory(currentSelectedItem.id, topic.id);
-                    } else if (currentSelectedItem.type === 'group') {
-                        historyPromise = electronAPI.getGroupChatHistory(currentSelectedItem.id, topic.id);
-                    }
-                    
-                    // Part C: 实现智能计数逻辑（前端需要复制后端的辅助函数）
-                    if (historyPromise) {
-                        historyPromise.then(historyResult => {
-                            if (historyResult && !historyResult.error && Array.isArray(historyResult)) {
-                                // 使用与后端相同的智能计数逻辑
-                                const unreadCount = calculateTopicUnreadCount(topic, historyResult);
-                                
-                                if (unreadCount > 0) {
-                                    messageCountSpan.textContent = `${unreadCount}`;
-                                    messageCountSpan.classList.add('has-unread');
-                                } else if (unreadCount === -1) {
-                                    // 仅未读标记，无计数
-                                    messageCountSpan.textContent = `${historyResult.length}`;
-                                    messageCountSpan.classList.add('unread-marker-only');
-                                } else {
-                                    messageCountSpan.textContent = `${historyResult.length}`;
-                                }
-                            } else {
-                                messageCountSpan.textContent = 'N/A';
-                            }
-                        }).catch(() => messageCountSpan.textContent = 'ERR');
-                    }
+                        const avatarImg = document.createElement('img');
+                        avatarImg.classList.add('avatar');
+                        // 优化：延迟加载头像，仅在需要时添加时间戳
+                        avatarImg.src = currentSelectedItem.avatarUrl ? currentSelectedItem.avatarUrl : (currentSelectedItem.type === 'group' ? 'assets/default_group_avatar.png' : 'assets/default_avatar.png');
+                        avatarImg.alt = `${currentSelectedItem.name} - ${topic.name}`;
+                        avatarImg.onerror = () => { avatarImg.src = (currentSelectedItem.type === 'group' ? 'assets/default_group_avatar.png' : 'assets/default_avatar.png'); };
 
-                    li.addEventListener('click', async () => {
-                        if (currentTopicIdRef.get() !== topic.id) {
-                            mainRendererFunctions.selectTopic(topic.id);
+                        const topicTitleDisplay = document.createElement('span');
+                        topicTitleDisplay.classList.add('topic-title-display');
+                        topicTitleDisplay.textContent = topic.name || `话题 ${topic.id}`;
+
+                        const messageCountSpan = document.createElement('span');
+                        messageCountSpan.classList.add('message-count');
+                        messageCountSpan.textContent = '...';
+
+                        li.appendChild(avatarImg);
+                        
+                        if (topic.locked === false) {
+                            const unlockedIndicator = document.createElement('span');
+                            unlockedIndicator.classList.add('unlocked-indicator');
+                            unlockedIndicator.textContent = 'unlocked';
+                            unlockedIndicator.title = 'AI可以查看和回复此话题';
+                            li.appendChild(unlockedIndicator);
                         }
-                    });
+                        
+                        li.appendChild(topicTitleDisplay);
+                        li.appendChild(messageCountSpan);
 
-                    li.addEventListener('contextmenu', (e) => {
-                        e.preventDefault();
-                        showTopicContextMenu(e, li, itemConfigFull, topic, currentSelectedItem.type);
-                    });
-                    topicListUl.appendChild(li);
-                }
+                        // 优化：延迟加载计数逻辑，避免瞬间爆发大量 IPC 请求
+                        setTimeout(() => {
+                            if (!li.isConnected) return; // 如果节点已从 DOM 移除，则跳过
+                            
+                            let historyPromise;
+                            if (currentSelectedItem.type === 'agent') {
+                                historyPromise = electronAPI.getChatHistory(currentSelectedItem.id, topic.id);
+                            } else if (currentSelectedItem.type === 'group') {
+                                historyPromise = electronAPI.getGroupChatHistory(currentSelectedItem.id, topic.id);
+                            }
+                            
+                            if (historyPromise) {
+                                historyPromise.then(historyResult => {
+                                    if (historyResult && !historyResult.error && Array.isArray(historyResult)) {
+                                        const unreadCount = calculateTopicUnreadCount(topic, historyResult);
+                                        if (unreadCount > 0) {
+                                            messageCountSpan.textContent = `${unreadCount}`;
+                                            messageCountSpan.classList.add('has-unread');
+                                        } else if (unreadCount === -1) {
+                                            messageCountSpan.textContent = `${historyResult.length}`;
+                                            messageCountSpan.classList.add('unread-marker-only');
+                                        } else {
+                                            messageCountSpan.textContent = `${historyResult.length}`;
+                                        }
+                                    } else {
+                                        messageCountSpan.textContent = 'N/A';
+                                    }
+                                }).catch(() => messageCountSpan.textContent = 'ERR');
+                            }
+                        }, 100 + (currentIndex * 10)); // 阶梯式延迟请求
+
+                        li.addEventListener('click', async () => {
+                            if (currentTopicIdRef.get() !== topic.id) {
+                                mainRendererFunctions.selectTopic(topic.id);
+                            }
+                        });
+
+                        li.addEventListener('contextmenu', (e) => {
+                            e.preventDefault();
+                            showTopicContextMenu(e, li, itemConfigFull, topic, currentSelectedItem.type);
+                        });
+                        fragment.appendChild(li);
+                    }
+                    
+                    topicListUl.appendChild(fragment);
+
+                    if (currentIndex < topicsToProcess.length) {
+                        // 使用 requestAnimationFrame 确保在下一帧继续渲染，保持 UI 响应
+                        requestAnimationFrame(renderBatch);
+                    } else {
+                        // 渲染完成后初始化排序
+                        if (currentSelectedItem.id && topicsToProcess.length > 0 && typeof Sortable !== 'undefined') {
+                            initializeTopicSortable(currentSelectedItem.id, currentSelectedItem.type);
+                        }
+                    }
+                };
+
+                // 开始第一批渲染
+                renderBatch();
             }
             if (currentSelectedItem.id && topicsToProcess && topicsToProcess.length > 0 && typeof Sortable !== 'undefined') {
                initializeTopicSortable(currentSelectedItem.id, currentSelectedItem.type);

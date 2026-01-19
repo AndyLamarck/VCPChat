@@ -10,6 +10,9 @@ const CDN_TO_LOCAL_MAP = {
     'https://unpkg.com/animejs': 'vendor/anime.min.js',
 };
 
+import * as visibilityOptimizer from './visibilityOptimizer.js';
+import { createPausableRAF, registerCanvasAnimation } from './visibilityOptimizer.js';
+
 // 🔥 全局跟踪已加载的脚本，防止跨消息重复加载
 if (!window._vcp_loaded_scripts) {
     window._vcp_loaded_scripts = new Set();
@@ -67,6 +70,7 @@ function patchThreeJS() {
 
         const originalRender = renderer.render;
         let associatedScene = null;
+        let associatedCamera = null;
 
         renderer.render = function(scene, camera) {
             if (this._disposed) {
@@ -75,6 +79,9 @@ function patchThreeJS() {
             
             if (scene && !associatedScene) {
                 associatedScene = scene;
+            }
+            if (camera && !associatedCamera) {
+                associatedCamera = camera;
             }
             
             if (!document.body.contains(this.domElement)) {
@@ -107,10 +114,23 @@ function patchThreeJS() {
                     if (!trackedThreeInstances.has(contentDiv)) {
                         trackedThreeInstances.set(contentDiv, []);
                     }
-                    trackedThreeInstances.get(contentDiv).push({
+                    const instance = {
                         renderer,
                         getScene: () => associatedScene,
-                    });
+                    };
+                    trackedThreeInstances.get(contentDiv).push(instance);
+
+                    // 注册到可见性优化器
+                    const messageItem = contentDiv.closest('.message-item');
+                    if (messageItem) {
+                        visibilityOptimizer.registerThreeContext(messageItem, {
+                            renderer,
+                            getScene: () => associatedScene,
+                            getCamera: () => associatedCamera,
+                            // 注意：这里无法直接获取外部的 renderLoop，
+                            // 但我们可以通过拦截 setAnimationLoop 来获取
+                        });
+                    }
                 }
                 observer.disconnect();
             }
@@ -148,6 +168,8 @@ function loadScript(src, onLoad, onError) {
 }
 
 function processScripts(containerElement) {
+    const messageItem = containerElement.closest('.message-item');
+
     // Separate scripts by type
     const allScripts = Array.from(containerElement.querySelectorAll('script'));
     const threeScripts = allScripts.filter(s => s.src && s.src.includes('three'));
@@ -158,16 +180,100 @@ function processScripts(containerElement) {
     allScripts.forEach(s => { if (s.parentNode) s.parentNode.removeChild(s); });
 
     const executeInline = () => {
-        inlineScripts.forEach(script => {
-            try {
-                const newScript = document.createElement('script');
-                // 通过IIFE（立即调用函数表达式）包裹脚本，防止全局作用域污染和变量重定义错误
-                newScript.textContent = `(function(){\n${script.textContent}\n})();`;
-                document.head.appendChild(newScript).parentNode.removeChild(newScript);
-            } catch (e) {
-                console.error('[Animation] Error executing inline script:', e);
-            }
-        });
+        // 🛡️ 拦截 anime.js 的创建，以便自动注册
+        const originalAnime = window.anime;
+        let animePatched = false;
+        if (originalAnime && !originalAnime._vcp_patched) {
+            window.anime = function(options) {
+                const instance = originalAnime(options);
+                if (messageItem) {
+                    visibilityOptimizer.registerAnimeInstance(messageItem, instance);
+                }
+                return instance;
+            };
+            Object.assign(window.anime, originalAnime);
+            window.anime._vcp_patched = true;
+            animePatched = true;
+        }
+
+        // 🛡️ Document API Shadowing - 防止 document.write/open/close 导致 SPA 崩溃
+        const originalWrite = document.write;
+        const originalOpen = document.open;
+        const originalClose = document.close;
+
+        const blockedApiHandler = function(...args) {
+            console.warn('[Animation] Blocked document.write/open/close call in inline script:', args);
+        };
+
+        document.write = blockedApiHandler;
+        document.open = blockedApiHandler;
+        document.close = blockedApiHandler;
+
+        try {
+            inlineScripts.forEach(script => {
+                try {
+                    // 1. 注册所有 canvas，以便优化器监控
+                    const canvases = containerElement.querySelectorAll('canvas');
+                    canvases.forEach(canvas => {
+                        if (messageItem) {
+                            registerCanvasAnimation(messageItem, { canvas });
+                        }
+                    });
+
+                    // 2. 创建可暂停的 rAF 包装器
+                    const pausableRAF = messageItem
+                        ? createPausableRAF(messageItem)
+                        : window.requestAnimationFrame;
+
+                    // 3. 影子注入：通过 IIFE 重新定义局部作用域内的 API
+                    // 我们将 pausableRAF 挂载到一个临时全局变量上，以便注入脚本读取
+                    const tempRafId = `_vcp_raf_${Math.random().toString(36).slice(2, 11)}`;
+                    window[tempRafId] = pausableRAF;
+                    
+                    // [优化] 拦截脚本中的 requestAnimationFrame，强制指向 pausableRAF
+                    let scriptContent = script.textContent;
+                    
+                    // 简单的正则替换，处理常见的调用方式
+                    // 注意：这只是辅助手段，核心拦截靠 IIFE 作用域覆盖
+                    scriptContent = scriptContent.replace(/window\.requestAnimationFrame/g, `window['${tempRafId}']`);
+                    
+                    const wrappedScript = `
+(function() {
+    const requestAnimationFrame = window['${tempRafId}'];
+    // 同时也覆盖 webkitRequestAnimationFrame 等变体以防万一
+    const webkitRequestAnimationFrame = requestAnimationFrame;
+    const mozRequestAnimationFrame = requestAnimationFrame;
+    
+    const container = document.querySelector('.message-item[data-message-id="${messageItem?.dataset.messageId}"] .md-content');
+    try {
+        ${scriptContent}
+    } catch (e) {
+        console.error('[Animation] Error in AI script:', e);
+    }
+})();`;
+                    
+                    const newScript = document.createElement('script');
+                    newScript.textContent = wrappedScript;
+                    document.head.appendChild(newScript).parentNode.removeChild(newScript);
+                    
+                    // 稍微延迟清理，确保脚本解析完成
+                    setTimeout(() => { delete window[tempRafId]; }, 0);
+
+                } catch (e) {
+                    console.error('[Animation] Error executing inline script:', e);
+                }
+            });
+        } finally {
+            // 🔄 恢复原始 API
+            document.write = originalWrite;
+            document.open = originalOpen;
+            document.close = originalClose;
+            
+            // 如果我们在本次执行中临时修改了 anime，且希望保持全局干净（可选）
+            // 但通常 anime 是全局加载的，保持 patch 也没关系
+            document.open = originalOpen;
+            document.close = originalClose;
+        }
     };
 
     const loadOtherScriptsAndExecuteInline = () => {

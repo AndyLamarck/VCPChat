@@ -5,12 +5,14 @@ gitignore
 
 AppData/
 
-assets/wallpaper/
-
 node_modules/
 
 .env
+!audio_engine/.env
 
 /public/assets
 
 **/.DS_Store
+
+# Rust build artifacts
+rust_audio_engine/target/

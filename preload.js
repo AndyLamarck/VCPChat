@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electron', {
             'music-get-devices',
             'music-configure-output',
             'music-set-eq',
+            'music-set-eq-type',
+            'music-configure-optimizations',
             'music-configure-upsampling', // 新增：升频配置通道
             'music-get-lyrics', // 新增：获取歌词
             'music-fetch-lyrics' // 新增：从网络获取歌词
@@ -313,11 +315,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Forum Module
     openForumWindow: () => ipcRenderer.send('open-forum-window'),
+    openMemoWindow: () => ipcRenderer.send('open-memo-window'),
     loadForumConfig: () => ipcRenderer.invoke('load-forum-config'),
     saveForumConfig: (config) => ipcRenderer.invoke('save-forum-config', config),
     loadAgentsList: () => ipcRenderer.invoke('load-agents-list'),
     loadUserAvatar: () => ipcRenderer.invoke('load-user-avatar'),
     loadAgentAvatar: (folderName) => ipcRenderer.invoke('load-agent-avatar', folderName),
+
+    // Memo Config
+    loadMemoConfig: () => ipcRenderer.invoke('load-memo-config'),
+    saveMemoConfig: (config) => ipcRenderer.invoke('save-memo-config', config),
 
     // Canvas Module
     openCanvasWindow: () => ipcRenderer.invoke('open-canvas-window'),

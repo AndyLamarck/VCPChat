@@ -649,8 +649,10 @@ window.chatManager = (() => {
         // Save history with the user message before adding the thinking message or making API calls
         await electronAPI.saveChatHistory(currentSelectedItem.id, currentTopicId, currentChatHistory);
 
-        // After saving history (which marks the topic as read), refresh the item list to update unread counts.
-        if (itemListManager) {
+        // After saving history (which marks the topic as read), refresh the unread counts.
+        if (itemListManager && typeof itemListManager.refreshUnreadCounts === 'function') {
+            itemListManager.refreshUnreadCounts();
+        } else if (itemListManager) {
             itemListManager.loadItems();
         }
 
@@ -917,6 +919,7 @@ window.chatManager = (() => {
                 model: (agentConfig && agentConfig.model) ? agentConfig.model : 'gemini-pro',
                 temperature: (agentConfig && agentConfig.temperature !== undefined) ? parseFloat(agentConfig.temperature) : 0.7,
                 ...(agentConfig && agentConfig.maxOutputTokens && { max_tokens: parseInt(agentConfig.maxOutputTokens) }),
+                ...(agentConfig && agentConfig.contextTokenLimit !== undefined && agentConfig.contextTokenLimit !== null && { contextTokenLimit: parseInt(agentConfig.contextTokenLimit) }),
                 ...(agentConfig && agentConfig.top_p !== undefined && agentConfig.top_p !== null && { top_p: parseFloat(agentConfig.top_p) }),
                 ...(agentConfig && agentConfig.top_k !== undefined && agentConfig.top_k !== null && { top_k: parseInt(agentConfig.top_k) }),
                 stream: useStreaming

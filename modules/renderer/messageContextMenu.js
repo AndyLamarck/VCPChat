@@ -197,8 +197,8 @@ function showContextMenu(event, messageItem, message) {
             if (contentDiv) {
                 // 克隆节点以避免修改实时显示的DOM
                 const contentClone = contentDiv.cloneNode(true);
-                // 移除工具使用气泡，以获得更干净的复制内容
-                contentClone.querySelectorAll('.vcp-tool-use-bubble, .vcp-tool-result-bubble').forEach(el => el.remove());
+                // 移除工具使用气泡、样式表和脚本，以获得更干净的复制内容
+                contentClone.querySelectorAll('.vcp-tool-use-bubble, .vcp-tool-result-bubble, style, script').forEach(el => el.remove());
                 // 修复：清理多余的空行，确保最多只有一个空行
                 textToCopy = contentClone.innerText.replace(/\n{3,}/g, '\n\n').trim();
             } else {
@@ -296,10 +296,8 @@ function showContextMenu(event, messageItem, message) {
                         if (contentDiv) {
                             // Clone the content element to avoid modifying the actual displayed content
                             const contentClone = contentDiv.cloneNode(true);
-                            // Remove all tool-use bubbles from the clone
-                            contentClone.querySelectorAll('.vcp-tool-use-bubble').forEach(el => el.remove());
-                            // Also remove tool-result bubbles
-                            contentClone.querySelectorAll('.vcp-tool-result-bubble').forEach(el => el.remove());
+                            // Remove all tool-use bubbles, tool-result bubbles, style tags, and script tags from the clone
+                            contentClone.querySelectorAll('.vcp-tool-use-bubble, .vcp-tool-result-bubble, style, script').forEach(el => el.remove());
                             // Now, get the innerText from the cleaned-up clone
                             // 修复：清理多余的空行，确保最多只有一个空行
                             textToRead = (contentClone.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
@@ -484,16 +482,20 @@ function toggleEditMode(messageItem, message) {
             textToDisplay = '[内容错误]';
         }
         
-        const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(textToDisplay));
-        contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
-        contextMenuDependencies.processRenderedContent(contentDiv);
-
-        // Re-run highlights to restore quotes, bolding, etc., which was missing.
-        setTimeout(() => {
-            if (contentDiv && contentDiv.isConnected) {
-                contextMenuDependencies.runTextHighlights(contentDiv);
-            }
-        }, 0);
+        // 🟢 修复：使用 updateMessageContent 确保正则规则被应用
+        if (contextMenuDependencies.updateMessageContent) {
+            contextMenuDependencies.updateMessageContent(message.id, textToDisplay);
+        } else {
+            // Fallback for safety, though updateMessageContent should be available now
+            const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(textToDisplay));
+            contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
+            contextMenuDependencies.processRenderedContent(contentDiv);
+            setTimeout(() => {
+                if (contentDiv && contentDiv.isConnected) {
+                    contextMenuDependencies.runTextHighlights(contentDiv);
+                }
+            }, 0);
+        }
 
         messageItem.classList.remove('message-item-editing');
         existingTextarea.remove();
@@ -591,10 +593,16 @@ function toggleEditMode(messageItem, message) {
                 // 🔧 保存成功后更新UI
                 mainRefs.currentChatHistoryRef.set([...currentChatHistoryArray]);
                 
-                const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(newContent));
-                contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
-                contextMenuDependencies.processRenderedContent(contentDiv);
-                contextMenuDependencies.renderAttachments(message, contentDiv);
+                // 🟢 修复：使用 updateMessageContent 确保正则规则被应用
+                if (contextMenuDependencies.updateMessageContent) {
+                    contextMenuDependencies.updateMessageContent(message.id, newContent);
+                } else {
+                    // Fallback for safety
+                    const rawHtml = markedInstance.parse(contextMenuDependencies.preprocessFullContent(newContent));
+                    contextMenuDependencies.setContentAndProcessImages(contentDiv, rawHtml, message.id);
+                    contextMenuDependencies.processRenderedContent(contentDiv);
+                    contextMenuDependencies.renderAttachments(message, contentDiv);
+                }
                 
                 // 🔧 重新启动文件监控
                 if (electronAPI.watcherStart && currentSelectedItemVal.config?.agentDataPath) {
@@ -697,7 +705,7 @@ async function handleRegenerateResponse(originalAssistantMessage) {
         name: currentSelectedItemVal.name || 'AI',
         content: '',
         timestamp: Date.now(),
-        id: `regen_${Date.now()}`,
+        id: `msg_${Date.now()}_assistant_${Math.random().toString(36).substring(2, 9)}`,
         isThinking: true,
         avatarUrl: currentSelectedItemVal.avatarUrl,
         avatarColor: currentSelectedItemVal.config?.avatarCalculatedColor,
@@ -891,6 +899,7 @@ async function handleRegenerateResponse(originalAssistantMessage) {
             model: agentConfig.model,
             temperature: parseFloat(agentConfig.temperature),
             max_tokens: agentConfig.maxOutputTokens ? parseInt(agentConfig.maxOutputTokens) : undefined,
+            contextTokenLimit: agentConfig.contextTokenLimit ? parseInt(agentConfig.contextTokenLimit) : undefined,
             top_p: agentConfig.top_p ? parseFloat(agentConfig.top_p) : undefined,
             top_k: agentConfig.top_k ? parseInt(agentConfig.top_k) : undefined,
             stream: agentConfig.streamOutput === true || String(agentConfig.streamOutput) === 'true'
@@ -945,7 +954,7 @@ async function handleRegenerateResponse(originalAssistantMessage) {
                     avatarColor: agentConfig.avatarCalculatedColor,
                     content: assistantMessageContent,
                     timestamp: Date.now(),
-                    id: response.id || `regen_nonstream_${Date.now()}`
+                    id: response.id || `msg_${Date.now()}_assistant_${Math.random().toString(36).substring(2, 9)}`
                 };
 
                 // 【修复2】采用更健壮的“读-改-写”模式

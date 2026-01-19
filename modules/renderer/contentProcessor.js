@@ -11,6 +11,36 @@ function initializeContentProcessor(refs) {
 }
 
 /**
+ * A helper function to escape HTML special characters.
+ * @param {string} text The text to escape.
+ * @returns {string} The escaped text.
+ */
+function escapeHtml(text) {
+    if (typeof text !== 'string') return '';
+    return text
+        .replace(/&/g, '\x26amp;')    // & -> &
+        .replace(/</g, '\x26lt;')     // < -> <
+        .replace(/>/g, '\x26gt;')     // > -> >
+        .replace(/"/g, '\x26quot;')   // " -> "
+        .replace(/'/g, '\x26#039;');  // ' -> &#039;
+}
+
+/**
+ * 处理「始」和「末」之间的内容，将其视为纯文本并转义。
+ * 支持流式传输中未闭合的情况。
+ * @param {string} text 输入文本
+ * @returns {string} 处理后的文本
+ */
+function processStartEndMarkers(text) {
+    if (typeof text !== 'string' || !text.includes('「始」')) return text;
+    
+    // 使用非贪婪匹配，同时支持匹配到字符串末尾（处理流式传输中未闭合的情况）
+    return text.replace(/「始」([\s\S]*?)(「末」|$)/g, (match, content, end) => {
+        return `「始」${escapeHtml(content)}${end}`;
+    });
+}
+
+/**
  * Ensures that triple backticks for code blocks are followed by a newline.
  * @param {string} text The input string.
  * @returns {string} The processed string with newlines after ``` if they were missing.
@@ -334,8 +364,23 @@ function processAllPreBlocksInContentDiv(contentDiv) {
 
     const allPreElements = contentDiv.querySelectorAll('pre');
     allPreElements.forEach(preElement => {
-        if (preElement.dataset.vcpPrettified === "true" || preElement.dataset.maidDiaryPrettified === "true") {
-            return; // Already processed
+        // 🟢 增加防御性检查：确保 preElement 仍在 DOM 中
+        // 在嵌套的 pre 场景下，外层 pre 的处理可能会导致内层 pre 被移出 DOM
+        if (!preElement || !preElement.parentElement) return;
+
+        if (preElement.dataset.vcpPrettified === "true" ||
+            preElement.dataset.maidDiaryPrettified === "true" ||
+            preElement.dataset.vcpHtmlPreview === "true" ||
+            preElement.dataset.vcpHtmlPreview === "blocked") {
+            return; // Already processed or blocked
+        }
+
+        // 🟢 首先检查是否在 VCP 气泡内
+        const isInsideVcpBubble = preElement.closest('.vcp-tool-use-bubble, .vcp-tool-result-bubble, .maid-diary-bubble');
+        if (isInsideVcpBubble) {
+            // 在气泡内的 pre 不应该被处理为可预览的 HTML
+            preElement.dataset.vcpHtmlPreview = "blocked";
+            return;
         }
 
         const codeElement = preElement.querySelector('code');
@@ -355,6 +400,167 @@ function processAllPreBlocksInContentDiv(contentDiv) {
             const dailyNoteContentMatch = blockText.match(/<<<DailyNoteStart>>>([\s\S]*?)<<<DailyNoteEnd>>>/);
             const actualDailyNoteText = dailyNoteContentMatch ? dailyNoteContentMatch[1].trim() : "";
             prettifySinglePreElement(preElement, 'dailynote', actualDailyNoteText);
+        }
+        // Check for HTML code block
+        else if (codeElement && (codeElement.classList.contains('language-html') || blockText.trim().startsWith('<!DOCTYPE html>') || blockText.trim().startsWith('<html'))) {
+            setupHtmlPreview(preElement, blockText);
+        }
+    });
+}
+
+/**
+ * Sets up a play/return toggle for HTML code blocks.
+ * @param {HTMLElement} preElement - The pre element containing the code.
+ * @param {string} htmlContent - The raw HTML content.
+ */
+function setupHtmlPreview(preElement, htmlContent) {
+    if (preElement.dataset.vcpHtmlPreview === "true" ||
+        preElement.dataset.vcpHtmlPreview === "blocked") return;
+
+    // 🟢 核心修复：检查是否在 VCP 气泡内
+    const isInsideVcpBubble = preElement.closest('.vcp-tool-use-bubble, .vcp-tool-result-bubble, .maid-diary-bubble');
+    if (isInsideVcpBubble) {
+        console.log('[ContentProcessor] Skipping HTML preview: inside VCP bubble');
+        preElement.dataset.vcpHtmlPreview = "blocked";
+        return;
+    }
+    
+    // 🟢 额外检查：内容是否包含「始」「末」标记
+    if (htmlContent.includes('「始」') || htmlContent.includes('「末」')) {
+        console.log('[ContentProcessor] Skipping HTML preview: contains tool markers');
+        preElement.dataset.vcpHtmlPreview = "blocked";
+        return;
+    }
+
+    preElement.dataset.vcpHtmlPreview = "true";
+
+    // Create container for the whole block to manage positioning
+    const container = document.createElement('div');
+    container.className = 'vcp-html-preview-container';
+    preElement.parentNode.insertBefore(container, preElement);
+    container.appendChild(preElement);
+
+    // Create the toggle button
+    const actionBtn = document.createElement('button');
+    actionBtn.className = 'vcp-html-preview-toggle';
+    actionBtn.innerHTML = '<span>▶️ 播放</span>';
+    actionBtn.title = '在气泡内预览 HTML';
+    actionBtn.dataset.vcpInteractive = 'true';
+    actionBtn.type = 'button';
+    container.appendChild(actionBtn);
+
+    let previewFrame = null;
+    const frameId = `vcp-frame-${Math.random().toString(36).substr(2, 9)}`;
+
+    actionBtn.addEventListener('click', (e) => {
+        // 🔴 彻底阻止事件传播，防止触发任何父级监听器
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const isPreviewing = container.classList.contains('preview-mode');
+        
+        if (!isPreviewing) {
+            // 🟢 核心修复：先获取当前高度，避免高度塌陷导致的滚动跳动
+            const currentHeight = preElement.offsetHeight;
+            
+            // 为容器设置固定高度，防止高度塌陷
+            container.style.minHeight = currentHeight + 'px';
+            
+            container.classList.add('preview-mode');
+            actionBtn.innerHTML = '<span>🔙 返回</span>';
+            
+            if (!previewFrame) {
+                previewFrame = document.createElement('iframe');
+                previewFrame.className = 'vcp-html-preview-frame';
+                previewFrame.dataset.frameId = frameId;
+                
+                // 🟢 先设置iframe的初始高度为当前代码块高度
+                previewFrame.style.height = currentHeight + 'px';
+                
+                previewFrame.srcdoc = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <style>
+                            html, body { margin: 0; padding: 0; overflow: hidden; height: auto; }
+                            body {
+                                padding: 20px;
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                background: white;
+                                color: black;
+                                line-height: 1.5;
+                                box-sizing: border-box;
+                                min-height: 100px;
+                            }
+                            * { box-sizing: border-box; }
+                            img { max-width: 100%; height: auto; }
+                        </style>
+                    </head>
+                    <body>
+                        <div id="vcp-wrapper">${htmlContent}</div>
+                        <script>
+                            function updateHeight() {
+                                const wrapper = document.getElementById('vcp-wrapper');
+                                const height = Math.max(wrapper.scrollHeight + 40, document.body.scrollHeight);
+                                window.parent.postMessage({
+                                    type: 'vcp-html-resize',
+                                    height: height,
+                                    frameId: '${frameId}'
+                                }, '*');
+                            }
+                            window.onload = () => {
+                                setTimeout(updateHeight, 50);
+                                setTimeout(updateHeight, 500);
+                            };
+                            new ResizeObserver(updateHeight).observe(document.body);
+                        </script>
+                    </body>
+                    </html>
+                `;
+                
+                const messageHandler = (msg) => {
+                    if (msg.data && msg.data.type === 'vcp-html-resize' && msg.data.frameId === frameId) {
+                        if (previewFrame) {
+                            // 🟢 平滑过渡到新高度
+                            previewFrame.style.transition = 'height 0.3s ease';
+                            previewFrame.style.height = msg.data.height + 'px';
+                            
+                            // 同时更新容器的最小高度
+                            container.style.minHeight = msg.data.height + 'px';
+                        }
+                    }
+                };
+                window.addEventListener('message', messageHandler);
+
+                container.appendChild(previewFrame);
+            } else {
+                previewFrame.style.display = 'block';
+                // 恢复之前的高度
+                previewFrame.style.height = currentHeight + 'px';
+            }
+            
+            // 🟢 延迟隐藏代码块，确保iframe先显示
+            setTimeout(() => {
+                preElement.style.display = 'none';
+            }, 50);
+            
+        } else {
+            // 返回代码模式
+            container.classList.remove('preview-mode');
+            actionBtn.innerHTML = '<span>▶️ 播放</span>';
+            
+            // 🟢 先显示代码块，再隐藏iframe
+            preElement.style.display = 'block';
+            
+            setTimeout(() => {
+                if (previewFrame) {
+                    previewFrame.style.display = 'none';
+                }
+                // 清除固定高度限制
+                container.style.minHeight = '';
+            }, 50);
         }
     });
 }
@@ -602,9 +808,13 @@ function processRenderedContent(contentDiv, settings = {}) {
     // Apply syntax highlighting to code blocks
     if (window.hljs) {
         contentDiv.querySelectorAll('pre code').forEach((block) => {
-            // Only highlight if the block hasn't been specially prettified (e.g., DailyNote or VCP ToolUse)
-            if (!block.parentElement.dataset.vcpPrettified && !block.parentElement.dataset.maidDiaryPrettified) {
-                window.hljs.highlightElement(block);
+            // 🟢 增加防御性检查：确保 block 及其父元素存在
+            // 在嵌套的 code block 场景下，外层 block 的高亮可能会导致内层 block 被移出 DOM
+            if (block && block.parentElement) {
+                // Only highlight if the block hasn't been specially prettified (e.g., DailyNote or VCP ToolUse)
+                if (!block.parentElement.dataset.vcpPrettified && !block.parentElement.dataset.maidDiaryPrettified) {
+                    window.hljs.highlightElement(block);
+                }
             }
         });
     }
@@ -776,5 +986,7 @@ export {
     highlightAllPatternsInMessage, // Export the new async highlighter
     sendButtonMessage,
     scopeCss, // Export the new CSS scoping function
-    applyContentProcessors // Export the new batch processor
+    applyContentProcessors, // Export the new batch processor
+    escapeHtml,
+    processStartEndMarkers
 };

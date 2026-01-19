@@ -1,8 +1,9 @@
 // modules/contextSanitizer.js
 // 上下文HTML标签转MD净化器模块
 
-const { JSDOM } = require('jsdom'); // ✅ 使用 jsdom
-const TurndownService = require('turndown');
+// 🔴 优化：将沉重的模块改为按需加载，防止阻塞主进程发送消息
+let JSDOM = null;
+let TurndownService = null;
 
 /**
  * LRU缓存类，支持过期时间
@@ -71,7 +72,19 @@ class ContextSanitizer {
         // 初始化 LRU 缓存，最大100条，1小时过期
         this.cache = new LRUCache(100, 3600000);
 
-        // 初始化 Turndown 服务
+        this.turndownService = null;
+    }
+
+    /**
+     * 延迟初始化 Turndown 和 JSDOM
+     */
+    _ensureService() {
+        if (this.turndownService) return;
+
+        console.log('[ContextSanitizer] Initializing heavy dependencies (JSDOM, Turndown)...');
+        if (!JSDOM) JSDOM = require('jsdom').JSDOM;
+        if (!TurndownService) TurndownService = require('turndown');
+
         this.turndownService = new TurndownService({
             headingStyle: 'atx',
             hr: '---',
@@ -164,6 +177,34 @@ class ContextSanitizer {
                 return text;
             }
         });
+
+        // 规则5：清理 VCP 元思考链
+        this.turndownService.addRule('vcpThoughtChains', {
+            filter: (node) => {
+                if (node.nodeName !== 'DIV') return false;
+                return node.classList.contains('vcp-thought-chain-bubble');
+            },
+            replacement: (content, node) => {
+                // 检查 TurndownService 实例上的自定义属性
+                if (this.turndownService.keepThoughtChains) {
+                    const title = node.getAttribute('data-thought-title') || '';
+                    const titlePart = title ? `: "${title}"` : '';
+                    return `\n\n[--- VCP元思考链${titlePart} ---]\n${content}\n[--- 元思考链结束 ---]\n\n`;
+                }
+                return '';
+            }
+        });
+    }
+
+    /**
+     * 清理元思考链（明文形式）
+     * @param {string} content - 原始内容
+     * @returns {string} - 清理后的内容
+     */
+    stripThoughtChains(content) {
+        if (typeof content !== 'string') return content;
+        const THOUGHT_CHAIN_REGEX = /\[--- VCP元思考链(?::\s*"([^"]*)")?\s*---\][\s\S]*?\[--- 元思考链结束 ---\]/gs;
+        return content.replace(THOUGHT_CHAIN_REGEX, '');
     }
 
     /**
@@ -200,7 +241,7 @@ class ContextSanitizer {
      * @param {string} content - 原始内容
      * @returns {string} - 净化后的内容
      */
-    sanitizeContent(content) {
+    sanitizeContent(content, keepThoughtChains = false) {
         if (typeof content !== 'string' || !content.trim()) {
             return content;
         }
@@ -211,7 +252,7 @@ class ContextSanitizer {
         }
 
         // 尝试从缓存获取
-        const cacheKey = this.generateCacheKey(content);
+        const cacheKey = this.generateCacheKey(content + (keepThoughtChains ? '_keep' : '_strip'));
         const cached = this.cache.get(cacheKey);
         if (cached !== null) {
             console.log('[ContextSanitizer] Cache hit for content');
@@ -219,9 +260,14 @@ class ContextSanitizer {
         }
 
         try {
+            this._ensureService();
+            
             // ✅ 使用 jsdom 解析
             const dom = new JSDOM(content);
             const body = dom.window.document.body;
+
+            // 设置 Turndown 服务的临时状态
+            this.turndownService.keepThoughtChains = keepThoughtChains;
 
             // ✅ 转换为 Markdown
             let markdown = this.turndownService.turndown(body);
@@ -248,7 +294,7 @@ class ContextSanitizer {
      * @param {number} startDepth - 净化初始深度（0 = 处理所有，1 = 跳过最后1条AI消息）
      * @returns {Array} - 处理后的消息数组
      */
-    sanitizeMessages(messages, startDepth = 2) {
+    sanitizeMessages(messages, startDepth = 2, keepThoughtChains = false) {
         if (!Array.isArray(messages) || messages.length === 0) {
             return messages;
         }
@@ -295,14 +341,14 @@ class ContextSanitizer {
 
             // 处理 content 字段
             if (typeof sanitizedMsg.content === 'string') {
-                sanitizedMsg.content = this.sanitizeContent(sanitizedMsg.content);
+                sanitizedMsg.content = this.sanitizeContent(sanitizedMsg.content, keepThoughtChains);
             } else if (Array.isArray(sanitizedMsg.content)) {
                 // 处理多模态内容（content 是数组的情况）
                 sanitizedMsg.content = sanitizedMsg.content.map(part => {
                     if (part.type === 'text' && typeof part.text === 'string') {
                         return {
                             ...part,
-                            text: this.sanitizeContent(part.text)
+                            text: this.sanitizeContent(part.text, keepThoughtChains)
                         };
                     }
                     return part; // 其他类型（如 image_url）保持不变

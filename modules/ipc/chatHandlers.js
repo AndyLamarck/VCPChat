@@ -2,7 +2,6 @@
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const fs = require('fs-extra');
 const path = require('path');
-const fileManager = require('../fileManager');
 const contextSanitizer = require('../contextSanitizer');
 
 /**
@@ -378,8 +377,10 @@ function initialize(mainWindow, context) {
                     fileTypeHint = `video/${ext.substring(1)}`;
                 }
 
+                const fileManager = require('../fileManager');
                 storedFileObject = await fileManager.storeFile(fileData.path, originalFileName, agentId, topicId, fileTypeHint);
             } else if (fileData.type === 'base64') {
+                const fileManager = require('../fileManager');
                 const originalFileName = `pasted_image_${Date.now()}.${fileData.extension || 'png'}`;
                 const buffer = Buffer.from(fileData.data, 'base64');
                 const fileTypeHint = `image/${fileData.extension || 'png'}`;
@@ -434,6 +435,7 @@ function initialize(mainWindow, context) {
                         fileTypeHint = `video/${ext.substring(1)}`;
                     }
 
+                    const fileManager = require('../fileManager');
                     const storedFile = await fileManager.storeFile(filePath, originalName, agentId, topicId, fileTypeHint);
                     storedFilesInfo.push(storedFile);
                 } catch (error) {
@@ -453,6 +455,7 @@ function initialize(mainWindow, context) {
         try {
             const originalFileName = `pasted_text_${Date.now()}.txt`;
             const buffer = Buffer.from(textContent, 'utf8');
+            const fileManager = require('../fileManager');
             const storedFileObject = await fileManager.storeFile(buffer, originalFileName, agentId, topicId, 'text/plain');
             return { success: true, attachment: storedFileObject };
         } catch (error) {
@@ -503,6 +506,7 @@ function initialize(mainWindow, context) {
                 
                 console.log(`[Main - handle-file-drop] Attempting to store dropped file: ${fileData.name} (Type: ${fileTypeHint}) for Agent: ${agentId}, Topic: ${topicId}`);
                 
+                const fileManager = require('../fileManager');
                 const storedFile = await fileManager.storeFile(fileSource, fileData.name, agentId, topicId, fileTypeHint);
                 storedFilesInfo.push({ success: true, attachment: storedFile, name: fileData.name });
 
@@ -521,6 +525,7 @@ function initialize(mainWindow, context) {
 
         try {
             const buffer = Buffer.from(imageData.data, 'base64');
+            const fileManager = require('../fileManager');
             const storedFileObject = await fileManager.storeFile(
                 buffer,
                 `pasted_image_${Date.now()}.${imageData.extension}`,
@@ -707,6 +712,33 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
                 console.error('[Agent Bubble Theme] Failed to inject bubble theme info:', e);
             }
             // --- End of Injection ---
+
+            // --- VCP Thought Chain Stripping ---
+            try {
+                // 默认不注入元思考链，除非明确开启
+                if (settings.enableThoughtChainInjection !== true) {
+                    messages = messages.map(msg => {
+                        if (typeof msg.content === 'string') {
+                            return { ...msg, content: contextSanitizer.stripThoughtChains(msg.content) };
+                        } else if (Array.isArray(msg.content)) {
+                            return {
+                                ...msg,
+                                content: msg.content.map(part => {
+                                    if (part.type === 'text' && typeof part.text === 'string') {
+                                        return { ...part, text: contextSanitizer.stripThoughtChains(part.text) };
+                                    }
+                                    return part;
+                                })
+                            };
+                        }
+                        return msg;
+                    });
+                    console.log(`[ThoughtChain] Thought chains stripped from context`);
+                }
+            } catch (e) {
+                console.error('[ThoughtChain] Failed to strip thought chains:', e);
+            }
+
             // --- Context Sanitizer Integration ---
             try {
                 if (settings.enableContextSanitizer === true) {
@@ -718,7 +750,11 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
                     const nonSystemMessages = messages.filter(m => m.role !== 'system');
                     
                     // 对非系统消息应用净化
-                    const sanitizedNonSystemMessages = contextSanitizer.sanitizeMessages(nonSystemMessages, sanitizerDepth);
+                    const sanitizedNonSystemMessages = contextSanitizer.sanitizeMessages(
+                        nonSystemMessages,
+                        sanitizerDepth,
+                        settings.enableThoughtChainInjection === true
+                    );
                     
                     // 重新组合消息数组（保持系统消息在最前面）
                     messages = [...systemMessages, ...sanitizedNonSystemMessages];
@@ -971,6 +1007,7 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
     /**
      * Part C: 智能计数逻辑辅助函数
      * 判断是否应该激活计数
+     * 规则：上下文（排除系统消息）有且只有一个 AI 的回复，且没有用户回复
      * @param {Array} history - 消息历史
      * @returns {boolean}
      */
@@ -980,18 +1017,8 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
         // 过滤掉系统消息
         const nonSystemMessages = history.filter(msg => msg.role !== 'system');
         
-        if (nonSystemMessages.length === 0) {
-            return true; // 没有用户消息
-        }
-        
-        // 检查倒数第二条消息（非系统消息）是否为用户消息
-        if (nonSystemMessages.length >= 2) {
-            const secondLast = nonSystemMessages[nonSystemMessages.length - 2];
-            return secondLast.role !== 'user';
-        }
-        
-        // 只有一条非系统消息
-        return nonSystemMessages[0].role !== 'user';
+        // 必须有且只有一条消息，且该消息是 AI 回复
+        return nonSystemMessages.length === 1 && nonSystemMessages[0].role === 'assistant';
     }
 
     /**
@@ -1000,18 +1027,7 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
      * @returns {number}
      */
     function countUnreadMessages(history) {
-        // 从最后一条消息开始，向前计数直到遇到用户消息
-        let count = 0;
-        const nonSystemMessages = history.filter(msg => msg.role !== 'system');
-        
-        for (let i = nonSystemMessages.length - 1; i >= 0; i--) {
-            if (nonSystemMessages[i].role === 'user') {
-                break;
-            }
-            count++;
-        }
-        
-        return count;
+        return shouldActivateCount(history) ? 1 : 0;
     }
 
     /**
@@ -1021,18 +1037,15 @@ ipcMain.handle('get-original-message-content', async (event, itemId, itemType, t
      * @returns {number} - 未读消息数，-1 表示仅显示小点
      */
     function calculateTopicUnreadCount(topic, history) {
-        // 如果话题被标记为未读，但未满足计数条件，返回 -1 表示仅显示小点
-        if (topic.unread === true) {
-            // 检查是否满足计数条件
-            if (topic.locked === false && shouldActivateCount(history)) {
-                return countUnreadMessages(history);
-            }
-            return -1; // 仅显示小点，不显示数字
+        // 优先检查自动计数条件（AI回复了但用户没回）
+        if (shouldActivateCount(history)) {
+            const count = countUnreadMessages(history);
+            if (count > 0) return count;
         }
-        
-        // 如果话题未标记为未读，检查是否满足自动计数条件
-        if (topic.locked === false && shouldActivateCount(history)) {
-            return countUnreadMessages(history);
+
+        // 如果不满足自动计数条件，但被手动标记为未读，则显示小点
+        if (topic.unread === true) {
+            return -1; // 仅显示小点，不显示数字
         }
         
         return 0; // 不显示
